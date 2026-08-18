@@ -20,7 +20,7 @@ def get_data(worksheet_name):
                 df = pd.DataFrame(
                     columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
             elif worksheet_name == "users":
-                df = pd.DataFrame(columns=['username', 'password', 'name', 'role'])
+                df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
         return df
     except Exception as e:
         st.error(f"구글 시트 연결 오류 ({worksheet_name}): {e}")
@@ -52,20 +52,27 @@ def get_user_credentials():
             u_id = str(row['username']).strip()
             credentials[u_id] = {
                 "password": str(row['password']).strip(),
-                "name": str(row['name']).strip(),
-                "role": str(row['role']).strip()
+                "name": str(row.get('name', '')).strip(),
+                "role": str(row.get('role', 'user')).strip(),
+                "department": str(row.get('department', '환경사업부')).strip()
             }
     return credentials
 
-def add_user(username, password, name, role):
+def add_user(username, password, name, role="user", department="환경사업부"):
     users_df = get_data("users")
     if not users_df.empty and username in users_df['username'].astype(str).values:
         return False, "이미 존재하는 아이디입니다."
     
-    new_user = pd.DataFrame([{'username': username, 'password': password, 'name': name, 'role': role}])
+    new_user = pd.DataFrame([{
+        'username': username,
+        'password': password,
+        'name': name,
+        'role': role,
+        'department': department
+    }])
     updated_df = pd.concat([users_df, new_user], ignore_index=True)
     save_data("users", updated_df)
-    return True, f"'{name}' 사용자가 등록되었습니다."
+    return True, f"'{name}' 사용자가 성공적으로 등록되었습니다."
 
 def delete_user(username):
     users_df = get_data("users")
@@ -136,28 +143,65 @@ if "logged_in" not in st.session_state:
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
 
-# 로그인 팝업 다이얼로그
-@st.dialog("🔒 일일 업무보고 시스템 로그인")
+# 로그인 / 회원가입 / 계정조회 팝업 다이얼로그
+@st.dialog("📋 일일 업무보고 시스템 - 사용자 인증", width="large")
 def login_dialog():
-    st.write("아이디와 비밀번호를 입력해 주세요.")
-    input_id = st.text_input("아이디 (ID)")
-    input_pw = st.text_input("비밀번호 (Password)", type="password")
+    tab_login, tab_signup, tab_users = st.tabs(["🔑 로그인", "➕ 사용자 추가 (등록)", "🔍 등록된 사용자 조회"])
     
-    if st.button("로그인", type="primary", use_container_width=True):
-        credentials = get_user_credentials()
+    # 1. 로그인 탭
+    with tab_login:
+        st.write("아이디와 비밀번호를 입력해 주세요.")
+        input_id = st.text_input("아이디 (ID)", key="dlg_login_id")
+        input_pw = st.text_input("비밀번호 (Password)", type="password", key="dlg_login_pw")
         
-        # 만약 users 시트가 비어있을 경우를 대비한 비상 admin
-        if not credentials:
-            credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin"}}
+        if st.button("로그인", type="primary", use_container_width=True, key="dlg_login_btn"):
+            credentials = get_user_credentials()
+            if not credentials:
+                credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin", "department": "총무부"}}
+                
+            if input_id in credentials and credentials[input_id]["password"] == input_pw:
+                st.session_state.logged_in = True
+                st.session_state.user_info = credentials[input_id]
+                st.session_state.user_info["username"] = input_id
+                st.success(f"{credentials[input_id]['name']}님, 환영합니다!")
+                st.rerun()
+            else:
+                st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+
+    # 2. 사용자 추가 (등록) 탭
+    with tab_signup:
+        st.write("신규 사용자를 등록합니다.")
+        new_id = st.text_input("아이디 (ID)", key="dlg_reg_id", placeholder="영문/숫자 조합 권장")
+        new_pw = st.text_input("비밀번호 (Password)", type="password", key="dlg_reg_pw")
+        new_name = st.text_input("이름 (실명)", key="dlg_reg_name", placeholder="홍길동")
+        new_dept = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="dlg_reg_dept")
+        
+        if st.button("사용자 등록하기", type="primary", use_container_width=True, key="dlg_reg_btn"):
+            if new_id.strip() and new_pw.strip() and new_name.strip():
+                success, msg = add_user(new_id.strip(), new_pw.strip(), new_name.strip(), role="user", department=new_dept)
+                if success:
+                    st.success(msg + " 이제 [🔑 로그인] 탭에서 로그인해 주세요.")
+                else:
+                    st.error(msg)
+            else:
+                st.error("아이디, 비밀번호, 이름을 모두 입력해 주세요.")
+
+    # 3. 등록된 사용자 조회 탭
+    with tab_users:
+        st.write("현재 등록되어 있는 사용자 목록입니다.")
+        users_df = get_data("users")
+        if not users_df.empty:
+            display_users = users_df.copy()
+            # 보안을 위해 비밀번호 마스킹
+            if 'password' in display_users.columns:
+                display_users['password'] = "******"
             
-        if input_id in credentials and credentials[input_id]["password"] == input_pw:
-            st.session_state.logged_in = True
-            st.session_state.user_info = credentials[input_id]
-            st.session_state.user_info["username"] = input_id
-            st.success(f"{credentials[input_id]['name']}님, 환영합니다!")
-            st.rerun()
+            rename_cols = {'username': '아이디', 'name': '이름', 'department': '소속 부서', 'role': '권한', 'password': '비밀번호'}
+            display_users = display_users.rename(columns=rename_cols)
+            cols_to_show = [c for c in ['아이디', '이름', '소속 부서', '권한'] if c in display_users.columns]
+            st.dataframe(display_users[cols_to_show], use_container_width=True, hide_index=True)
         else:
-            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+            st.info("등록된 사용자 정보가 없습니다.")
 
 # 로그인 검증
 if not st.session_state.logged_in:
@@ -181,36 +225,13 @@ with st.sidebar:
         st.session_state.user_info = None
         st.rerun()
         
-    # 👑 관리자 전용: 사용자 계정 관리 패널
+    # 👑 관리자 전용: 사용자 계정 삭제 패널
     if st.session_state.user_info.get("role") == "admin":
         st.markdown("---")
-        with st.expander("⚙️ 사용자 계정 관리 (Admin)"):
-            st.caption("새 직원을 추가하거나 퇴사자 계정을 삭제합니다.")
-            
-            # 사용자 추가
-            st.write("**[➕ 계정 추가]**")
-            new_u_id = st.text_input("새 아이디", key="new_u_id")
-            new_u_pw = st.text_input("비밀번호", key="new_u_pw")
-            new_u_name = st.text_input("사용자 이름", key="new_u_name")
-            new_u_role = st.selectbox("권한", ["user", "admin"], format_func=lambda x: "일반직원(user)" if x == "user" else "관리자(admin)", key="new_u_role")
-            
-            if st.button("사용자 등록", type="primary"):
-                if new_u_id.strip() and new_u_pw.strip() and new_u_name.strip():
-                    success, msg = add_user(new_u_id.strip(), new_u_pw.strip(), new_u_name.strip(), new_u_role)
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-                else:
-                    st.error("모든 항목을 입력해 주세요.")
-            
-            st.markdown("---")
-            # 사용자 삭제
-            st.write("**[🗑️ 계정 삭제]**")
+        with st.expander("⚙️ 계정 삭제 관리 (Admin)"):
             all_users = get_user_credentials()
             del_target = st.selectbox("삭제할 계정 선택", [u for u in all_users.keys() if u != "admin"])
-            if st.button("선택 계정 삭제"):
+            if st.button("선택 계정 삭제", key="sidebar_del_btn"):
                 if del_target:
                     success, msg = delete_user(del_target)
                     if success:
@@ -233,9 +254,11 @@ with tab1:
         with col1:
             report_date = st.date_input("날짜", date.today(), key="t1_date")
         with col2:
-            department = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="t1_dept")
+            default_dept = st.session_state.user_info.get("department", "환경사업부")
+            dept_list = ["환경사업부", "시스템사업부", "총무부"]
+            dept_index = dept_list.index(default_dept) if default_dept in dept_list else 0
+            department = st.selectbox("소속 부서", dept_list, index=dept_index, key="t1_dept")
         with col3:
-            # 로그인한 사용자 이름 기본 입력
             default_name = st.session_state.user_info.get("name", "")
             name = st.text_input("이름", value=default_name if default_name != "관리자" else "", key="t1_name")
 
