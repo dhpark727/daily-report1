@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import date
 from streamlit_gsheets import GSheetsConnection
 
-
 # --------------------------------
 # 1. 구글 스프레드시트 연동 및 데이터 관리 함수
 # --------------------------------
@@ -96,7 +95,9 @@ st.title("📋 일일 업무보고 시스템")
 
 tab1, tab2, tab3, tab4 = st.tabs(["✍️ 보고서 작성", "🔍 내 보고서 관리", "👨‍💼 부서장 통합 보고", "📊 종합 대시보드"])
 
+# --------------------------------
 # 탭 1: 보고서 작성
+# --------------------------------
 with tab1:
     st.header("오늘의 업무를 기록해주세요")
     with st.form("report_form", clear_on_submit=True):
@@ -120,7 +121,9 @@ with tab1:
                 insert_report(report_date, department, name, today_result, tomorrow_plan, issue)
                 st.success(f"{name}님의 업무보고가 성공적으로 제출되었습니다!")
 
+# --------------------------------
 # 탭 2: 내 보고서 관리
+# --------------------------------
 with tab2:
     st.header("🔍 내 업무보고 조회 및 수정")
     col1, col2 = st.columns(2)
@@ -170,7 +173,9 @@ with tab2:
             else:
                 st.info(f"'{search_name}'님으로 등록된 업무보고가 없습니다.")
 
+# --------------------------------
 # 탭 3: 부서장 통합 보고
+# --------------------------------
 with tab3:
     st.header("부서 통합 업무보고 취합")
     col1, col2 = st.columns(2)
@@ -209,7 +214,9 @@ with tab3:
                 save_consolidated_report(m_date, m_dept, m_name, c_today, c_tomorrow, c_issue)
                 st.success(f"{m_dept} 통합 보고서가 등록되었습니다.")
 
+# --------------------------------
 # 탭 4: 종합 대시보드
+# --------------------------------
 with tab4:
     st.header("부서별 업무보고 종합 대시보드")
     col1, col2 = st.columns(2)
@@ -247,13 +254,47 @@ with tab4:
 
     with dash_tab2:
         st.subheader("모든 팀원 개별 상세 내역" if filter_dept == "전체" else f"{filter_dept} 팀원 개별 상세 내역")
+        st.caption("💡 아래 표에서 직원의 행/셀을 마우스로 클릭하시면 하단에 [보고서 작성 양식] 형태로 상세 내용이 표시됩니다.")
+        
         if not i_df.empty:
             display_i_df = i_df.rename(columns={
                 'department': '부서', 'name': '이름',
                 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
-            })[['부서', '이름', '금일 실적', '명일 계획', '특이사항']]
-            st.dataframe(display_i_df, use_container_width=True, hide_index=True)
+            })[['부서', '이름', '금일 실적', '명일 계획', '특이사항']].reset_index(drop=True)
 
+            # 표에서 클릭(선택) 활성화
+            selection = st.dataframe(
+                display_i_df,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row"
+            )
+
+            # 선택된 행이 있을 경우 [보고서 작성 탭] 표시 형식으로 하단에 카드 출력
+            selected_rows = selection.selection.rows
+            if selected_rows:
+                selected_idx = selected_rows[0]
+                selected_row = i_df.iloc[selected_idx]
+
+                st.markdown("---")
+                st.subheader(f"📄 [{selected_row['department']}] {selected_row['name']}님의 업무보고 상세")
+                
+                # 작성 탭과 동일한 3칸 헤더 구조
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.text_input("날짜", value=str(selected_row['report_date']), disabled=True, key="view_date")
+                with c2:
+                    st.text_input("소속 부서", value=str(selected_row['department']), disabled=True, key="view_dept")
+                with c3:
+                    st.text_input("이름", value=str(selected_row['name']), disabled=True, key="view_name")
+
+                # 작성 탭과 동일한 텍스트 영역 형식 (읽기 전용 형태)
+                st.text_area("1. 금일 업무 실적", value=str(selected_row['today_result']), height=150, disabled=True, key="view_today")
+                st.text_area("2. 명일 업무 계획", value=str(selected_row['tomorrow_plan']), height=100, disabled=True, key="view_tomorrow")
+                st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row['issue']), height=100, disabled=True, key="view_issue")
+
+            # 관리자 강제 수정/삭제 기능은 그대로 유지
             with st.expander("관리자 전용 개별 보고서 강제 수정/삭제"):
                 report_options = {f"{row['name']} ({row['department']})": row['id'] for _, row in i_df.iterrows()}
                 selected_label = st.selectbox("조치할 직원의 보고서를 선택하세요", list(report_options.keys()))
