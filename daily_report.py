@@ -4,6 +4,38 @@ from datetime import date
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
+# 0. 계정 및 로그인 인증 관리
+# --------------------------------
+USER_CREDENTIALS = {
+    # 일반 사용자 계정
+    "user": {"password": "user1234", "name": "임직원", "role": "user"},
+    # 관리자(대표님/총괄) 계정
+    "admin": {"password": "admin1234", "name": "관리자", "role": "admin"}
+}
+
+# 세션 상태 초기화
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_info" not in st.session_state:
+    st.session_state.user_info = None
+
+# 로그인 팝업 다이얼로그
+@st.dialog("🔒 일일 업무보고 시스템 로그인")
+def login_dialog():
+    st.write("아이디와 비밀번호를 입력해 주세요.")
+    input_id = st.text_input("아이디 (ID)")
+    input_pw = st.text_input("비밀번호 (Password)", type="password")
+    
+    if st.button("로그인", type="primary", use_container_width=True):
+        if input_id in USER_CREDENTIALS and USER_CREDENTIALS[input_id]["password"] == input_pw:
+            st.session_state.logged_in = True
+            st.session_state.user_info = USER_CREDENTIALS[input_id]
+            st.success(f"{USER_CREDENTIALS[input_id]['name']}님, 환영합니다!")
+            st.rerun()
+        else:
+            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+
+# --------------------------------
 # 1. 구글 스프레드시트 연동 및 데이터 관리 함수
 # --------------------------------
 def get_data(worksheet_name):
@@ -88,9 +120,31 @@ def delete_report(report_id):
 
 
 # --------------------------------
-# 2. 웹 인터페이스 (UI) 설정
+# 2. 웹 페이지 기본 구성 & 로그인 검증
 # --------------------------------
 st.set_page_config(page_title="일일 업무보고 시스템", layout="wide")
+
+# 로그인이 안 되어 있으면 안내문과 함께 로그인 팝업 호출
+if not st.session_state.logged_in:
+    st.title("📋 일일 업무보고 시스템")
+    st.info("서비스를 이용하시려면 먼저 로그인을 완료해 주세요.")
+    login_dialog()
+    st.stop()
+
+# --- 로그인 완료 후 메인 시스템 화면 ---
+
+# 사이드바 로그인 정보 및 로그아웃
+with st.sidebar:
+    st.markdown(f"### 👤 접속 정보")
+    user_name = st.session_state.user_info['name']
+    user_role = "👑 총괄 관리자" if st.session_state.user_info['role'] == "admin" else "💼 일반 사용자"
+    st.write(f"**이름**: {user_name}")
+    st.write(f"**권한**: {user_role}")
+    if st.button("로그아웃", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_info = None
+        st.rerun()
+
 st.title("📋 일일 업무보고 시스템")
 
 tab1, tab2, tab3, tab4 = st.tabs(["✍️ 보고서 작성", "🔍 내 보고서 관리", "👨‍💼 부서장 통합 보고", "📊 종합 대시보드"])
@@ -280,7 +334,6 @@ with tab4:
                 st.markdown("---")
                 st.subheader(f"📄 [{selected_row['department']}] {selected_row['name']}님의 업무보고 상세")
                 
-                # 작성 탭과 동일한 3칸 헤더 구조
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     st.text_input("날짜", value=str(selected_row['report_date']), disabled=True, key="view_date")
@@ -289,32 +342,35 @@ with tab4:
                 with c3:
                     st.text_input("이름", value=str(selected_row['name']), disabled=True, key="view_name")
 
-                # 작성 탭과 동일한 텍스트 영역 형식 (읽기 전용 형태)
                 st.text_area("1. 금일 업무 실적", value=str(selected_row['today_result']), height=150, disabled=True, key="view_today")
                 st.text_area("2. 명일 업무 계획", value=str(selected_row['tomorrow_plan']), height=100, disabled=True, key="view_tomorrow")
                 st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row['issue']), height=100, disabled=True, key="view_issue")
 
-            # 관리자 강제 수정/삭제 기능은 그대로 유지
-            with st.expander("관리자 전용 개별 보고서 강제 수정/삭제"):
-                report_options = {f"{row['name']} ({row['department']})": row['id'] for _, row in i_df.iterrows()}
-                selected_label = st.selectbox("조치할 직원의 보고서를 선택하세요", list(report_options.keys()))
-                if selected_label:
-                    selected_id = str(report_options[selected_label])
-                    selected_row = i_df[i_df['id'].astype(str) == selected_id].iloc[0]
-                    with st.form(key=f"admin_edit_form_{selected_id}"):
-                        edit_today = st.text_area("1. 금일 업무 실적", value=selected_row['today_result'], height=150)
-                        edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row['tomorrow_plan'], height=100)
-                        edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row['issue'], height=100)
-                        btn_col1, btn_col2 = st.columns(2)
-                        with btn_col1:
-                            if st.form_submit_button("강제 수정", type="primary"):
-                                update_report(selected_id, edit_today, edit_tomorrow, edit_issue)
-                                st.success("수정되었습니다.")
-                                st.rerun()
-                        with btn_col2:
-                            if st.form_submit_button("강제 삭제"):
-                                delete_report(selected_id)
-                                st.warning("삭제되었습니다.")
-                                st.rerun()
+            # 🔒 관리자(Admin) 권한일 때만 수정/삭제 창 노출
+            if st.session_state.user_info.get("role") == "admin":
+                with st.expander("👑 관리자 전용 개별 보고서 강제 수정/삭제"):
+                    report_options = {f"{row['name']} ({row['department']})": row['id'] for _, row in i_df.iterrows()}
+                    selected_label = st.selectbox("조치할 직원의 보고서를 선택하세요", list(report_options.keys()))
+                    if selected_label:
+                        selected_id = str(report_options[selected_label])
+                        selected_row = i_df[i_df['id'].astype(str) == selected_id].iloc[0]
+                        with st.form(key=f"admin_edit_form_{selected_id}"):
+                            edit_today = st.text_area("1. 금일 업무 실적", value=selected_row['today_result'], height=150)
+                            edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row['tomorrow_plan'], height=100)
+                            edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row['issue'], height=100)
+                            btn_col1, btn_col2 = st.columns(2)
+                            with btn_col1:
+                                if st.form_submit_button("강제 수정", type="primary"):
+                                    update_report(selected_id, edit_today, edit_tomorrow, edit_issue)
+                                    st.success("수정되었습니다.")
+                                    st.rerun()
+                            with btn_col2:
+                                if st.form_submit_button("강제 삭제"):
+                                    delete_report(selected_id)
+                                    st.warning("삭제되었습니다.")
+                                    st.rerun()
+            else:
+                # 일반 계정 접속 시에는 안내 메시지만 표시하거나 숨김
+                st.caption("🔒 개별 보고서 수정/삭제 권한은 총괄 관리자(admin) 계정에만 부여됩니다.")
         else:
             st.info("해당 조건으로 제출된 개별 보고서가 없습니다.")
