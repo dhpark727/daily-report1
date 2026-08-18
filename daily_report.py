@@ -4,38 +4,6 @@ from datetime import date
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
-# 0. 계정 및 로그인 인증 관리
-# --------------------------------
-USER_CREDENTIALS = {
-    # 일반 사용자 계정
-    "user": {"password": "user1234", "name": "임직원", "role": "user"},
-    # 관리자(대표님/총괄) 계정
-    "admin": {"password": "admin1234", "name": "관리자", "role": "admin"}
-}
-
-# 세션 상태 초기화
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user_info" not in st.session_state:
-    st.session_state.user_info = None
-
-# 로그인 팝업 다이얼로그
-@st.dialog("🔒 일일 업무보고 시스템 로그인")
-def login_dialog():
-    st.write("아이디와 비밀번호를 입력해 주세요.")
-    input_id = st.text_input("아이디 (ID)")
-    input_pw = st.text_input("비밀번호 (Password)", type="password")
-    
-    if st.button("로그인", type="primary", use_container_width=True):
-        if input_id in USER_CREDENTIALS and USER_CREDENTIALS[input_id]["password"] == input_pw:
-            st.session_state.logged_in = True
-            st.session_state.user_info = USER_CREDENTIALS[input_id]
-            st.success(f"{USER_CREDENTIALS[input_id]['name']}님, 환영합니다!")
-            st.rerun()
-        else:
-            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
-
-# --------------------------------
 # 1. 구글 스프레드시트 연동 및 데이터 관리 함수
 # --------------------------------
 def get_data(worksheet_name):
@@ -48,13 +16,14 @@ def get_data(worksheet_name):
             if worksheet_name == "reports":
                 df = pd.DataFrame(
                     columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue'])
-            else:
+            elif worksheet_name == "consolidated_reports":
                 df = pd.DataFrame(
-                    columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan',
-                             'issue'])
+                    columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
+            elif worksheet_name == "users":
+                df = pd.DataFrame(columns=['username', 'password', 'name', 'role'])
         return df
     except Exception as e:
-        st.error(f"구글 시트 연결 오류: {e}")
+        st.error(f"구글 시트 연결 오류 ({worksheet_name}): {e}")
         return pd.DataFrame()
 
 
@@ -73,6 +42,43 @@ def generate_new_id(df):
         return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 
+# --- 사용자 계정 관리 함수 ---
+def get_user_credentials():
+    """users 시트에서 사용자 정보를 읽어옵니다."""
+    users_df = get_data("users")
+    credentials = {}
+    if not users_df.empty:
+        for _, row in users_df.iterrows():
+            u_id = str(row['username']).strip()
+            credentials[u_id] = {
+                "password": str(row['password']).strip(),
+                "name": str(row['name']).strip(),
+                "role": str(row['role']).strip()
+            }
+    return credentials
+
+def add_user(username, password, name, role):
+    users_df = get_data("users")
+    if not users_df.empty and username in users_df['username'].astype(str).values:
+        return False, "이미 존재하는 아이디입니다."
+    
+    new_user = pd.DataFrame([{'username': username, 'password': password, 'name': name, 'role': role}])
+    updated_df = pd.concat([users_df, new_user], ignore_index=True)
+    save_data("users", updated_df)
+    return True, f"'{name}' 사용자가 등록되었습니다."
+
+def delete_user(username):
+    users_df = get_data("users")
+    if not users_df.empty:
+        if username == "admin":
+            return False, "기본 관리자(admin) 계정은 삭제할 수 없습니다."
+        updated_df = users_df[users_df['username'].astype(str) != str(username)]
+        save_data("users", updated_df)
+        return True, f"'{username}' 계정이 삭제되었습니다."
+    return False, "계정 정보를 찾을 수 없습니다."
+
+
+# --- 보고서 데이터 관리 함수 ---
 def insert_report(report_date, department, name, today_result, tomorrow_plan, issue):
     df = get_data("reports")
     new_id = generate_new_id(df)
@@ -124,26 +130,94 @@ def delete_report(report_id):
 # --------------------------------
 st.set_page_config(page_title="일일 업무보고 시스템", layout="wide")
 
-# 로그인이 안 되어 있으면 안내문과 함께 로그인 팝업 호출
+# 세션 상태 초기화
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_info" not in st.session_state:
+    st.session_state.user_info = None
+
+# 로그인 팝업 다이얼로그
+@st.dialog("🔒 일일 업무보고 시스템 로그인")
+def login_dialog():
+    st.write("아이디와 비밀번호를 입력해 주세요.")
+    input_id = st.text_input("아이디 (ID)")
+    input_pw = st.text_input("비밀번호 (Password)", type="password")
+    
+    if st.button("로그인", type="primary", use_container_width=True):
+        credentials = get_user_credentials()
+        
+        # 만약 users 시트가 비어있을 경우를 대비한 비상 admin
+        if not credentials:
+            credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin"}}
+            
+        if input_id in credentials and credentials[input_id]["password"] == input_pw:
+            st.session_state.logged_in = True
+            st.session_state.user_info = credentials[input_id]
+            st.session_state.user_info["username"] = input_id
+            st.success(f"{credentials[input_id]['name']}님, 환영합니다!")
+            st.rerun()
+        else:
+            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+
+# 로그인 검증
 if not st.session_state.logged_in:
     st.title("📋 일일 업무보고 시스템")
     st.info("서비스를 이용하시려면 먼저 로그인을 완료해 주세요.")
     login_dialog()
     st.stop()
 
-# --- 로그인 완료 후 메인 시스템 화면 ---
+# --- 로그인 완료 후 메인 시스템 ---
 
-# 사이드바 로그인 정보 및 로그아웃
+# 사이드바 설정
 with st.sidebar:
-    st.markdown(f"### 👤 접속 정보")
+    st.markdown("### 👤 접속 정보")
     user_name = st.session_state.user_info['name']
     user_role = "👑 총괄 관리자" if st.session_state.user_info['role'] == "admin" else "💼 일반 사용자"
     st.write(f"**이름**: {user_name}")
     st.write(f"**권한**: {user_role}")
+    
     if st.button("로그아웃", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.user_info = None
         st.rerun()
+        
+    # 👑 관리자 전용: 사용자 계정 관리 패널
+    if st.session_state.user_info.get("role") == "admin":
+        st.markdown("---")
+        with st.expander("⚙️ 사용자 계정 관리 (Admin)"):
+            st.caption("새 직원을 추가하거나 퇴사자 계정을 삭제합니다.")
+            
+            # 사용자 추가
+            st.write("**[➕ 계정 추가]**")
+            new_u_id = st.text_input("새 아이디", key="new_u_id")
+            new_u_pw = st.text_input("비밀번호", key="new_u_pw")
+            new_u_name = st.text_input("사용자 이름", key="new_u_name")
+            new_u_role = st.selectbox("권한", ["user", "admin"], format_func=lambda x: "일반직원(user)" if x == "user" else "관리자(admin)", key="new_u_role")
+            
+            if st.button("사용자 등록", type="primary"):
+                if new_u_id.strip() and new_u_pw.strip() and new_u_name.strip():
+                    success, msg = add_user(new_u_id.strip(), new_u_pw.strip(), new_u_name.strip(), new_u_role)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.error("모든 항목을 입력해 주세요.")
+            
+            st.markdown("---")
+            # 사용자 삭제
+            st.write("**[🗑️ 계정 삭제]**")
+            all_users = get_user_credentials()
+            del_target = st.selectbox("삭제할 계정 선택", [u for u in all_users.keys() if u != "admin"])
+            if st.button("선택 계정 삭제"):
+                if del_target:
+                    success, msg = delete_user(del_target)
+                    if success:
+                        st.warning(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 st.title("📋 일일 업무보고 시스템")
 
@@ -161,7 +235,9 @@ with tab1:
         with col2:
             department = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="t1_dept")
         with col3:
-            name = st.text_input("이름", key="t1_name")
+            # 로그인한 사용자 이름 기본 입력
+            default_name = st.session_state.user_info.get("name", "")
+            name = st.text_input("이름", value=default_name if default_name != "관리자" else "", key="t1_name")
 
         st.markdown("---")
         today_result = st.text_area("1. 금일 업무 실적", placeholder="[프로젝트명] 세부 진행 내용 (진척도%)", height=150)
@@ -184,7 +260,7 @@ with tab2:
     with col1:
         search_dept = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="search_dept")
     with col2:
-        search_name = st.text_input("본인 이름 입력", key="search_name", placeholder="조회할 이름을 입력하고 엔터를 누르세요")
+        search_name = st.text_input("본인 이름 입력", value=st.session_state.user_info.get("name", ""), key="search_name")
 
     if search_name.strip():
         df = get_data("reports")
@@ -316,7 +392,7 @@ with tab4:
                 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
             })[['부서', '이름', '금일 실적', '명일 계획', '특이사항']].reset_index(drop=True)
 
-            # 표에서 클릭(선택) 활성화
+            # 표 클릭 시 선택 이벤트
             selection = st.dataframe(
                 display_i_df,
                 use_container_width=True,
@@ -325,7 +401,7 @@ with tab4:
                 selection_mode="single-row"
             )
 
-            # 선택된 행이 있을 경우 [보고서 작성 탭] 표시 형식으로 하단에 카드 출력
+            # 선택된 행 하단 카드 출력
             selected_rows = selection.selection.rows
             if selected_rows:
                 selected_idx = selected_rows[0]
@@ -346,7 +422,7 @@ with tab4:
                 st.text_area("2. 명일 업무 계획", value=str(selected_row['tomorrow_plan']), height=100, disabled=True, key="view_tomorrow")
                 st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row['issue']), height=100, disabled=True, key="view_issue")
 
-            # 🔒 관리자(Admin) 권한일 때만 수정/삭제 창 노출
+            # 👑 관리자 전용 수정/삭제 패널
             if st.session_state.user_info.get("role") == "admin":
                 with st.expander("👑 관리자 전용 개별 보고서 강제 수정/삭제"):
                     report_options = {f"{row['name']} ({row['department']})": row['id'] for _, row in i_df.iterrows()}
@@ -370,7 +446,6 @@ with tab4:
                                     st.warning("삭제되었습니다.")
                                     st.rerun()
             else:
-                # 일반 계정 접속 시에는 안내 메시지만 표시하거나 숨김
-                st.caption("🔒 개별 보고서 수정/삭제 권한은 총괄 관리자(admin) 계정에만 부여됩니다.")
+                st.caption("🔒 개별 보고서 강제 수정/삭제 권한은 총괄 관리자(admin) 계정에만 부여됩니다.")
         else:
             st.info("해당 조건으로 제출된 개별 보고서가 없습니다.")
