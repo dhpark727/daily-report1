@@ -29,6 +29,12 @@ def render_approval_tab(user_name, user_dept, user_role):
     # --------------------------------
     with sub1:
         st.subheader("새로운 품의서 작성")
+        
+        # 기안 상신 성공 알림 메시지 노출 영역
+        if st.session_state.get("approval_submitted_msg"):
+            st.success(st.session_state["approval_submitted_msg"])
+            st.session_state["approval_submitted_msg"] = None
+
         with st.form("new_approval_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
@@ -52,12 +58,12 @@ def render_approval_tab(user_name, user_dept, user_role):
                     st.error("품의 제목과 내용을 모두 입력해 주세요.")
                 else:
                     mgr2_val = "" if target_mgr2 == "선택 안 함" else target_mgr2
-                    success, msg = insert_approval_doc(doc_type, title, user_name, user_dept, budget, target_mgr1, mgr2_val, cc_selected, content)
+                    success, _ = insert_approval_doc(doc_type, title, user_name, user_dept, budget, target_mgr1, mgr2_val, cc_selected, content)
                     if success:
-                        st.success(msg)
+                        st.session_state["approval_submitted_msg"] = f"✅ [{title}] 품의가 정상 결재 상신 되었습니다. (1차 결재자: {target_mgr1})"
                         st.rerun()
                     else:
-                        st.error(msg)
+                        st.error("품의서 등록 중 오류가 발생했습니다.")
 
     # --------------------------------
     # 서브탭 2: 결재함 & 내 기안 문서 조회
