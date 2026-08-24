@@ -238,8 +238,10 @@ def time_to_minutes(t):
         return 0
     except:
         return 0
-# --- 전자결재 (품의 및 지출정산) 관련 함수 ---
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, content):
+        
+# --- 전자결재 (지정 결재자 체계 적용) ---
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_manager, content):
+    """기안 시 1차 승인 대상자를 지정하여 상신"""
     df = get_data("approvals")
     new_id = generate_new_id(df)
     now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
@@ -247,14 +249,15 @@ def insert_approval_doc(doc_type, title, drafter_name, department, budget, conte
         'id': str(new_id), 'created_at': now_str, 'doc_type': str(doc_type),
         'title': str(title), 'drafter_name': str(drafter_name), 'department': str(department),
         'budget': str(budget), 'content': str(content), 'status': '1차결재대기',
+        'target_manager': str(target_manager),  # 지정된 1차 결재자
         'manager_name': '', 'manager_comment': '', 'final_approver': '', 'final_comment': '',
         'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
     }])
     save_data("approvals", pd.concat([df, new_row], ignore_index=True))
-    return True, f"[{title}] 품의서가 상신되었습니다. (1차 결재 대기)"
+    return True, f"[{title}] 품의서가 상신되었습니다. (1차 결재자: {target_manager})"
 
 def approve_step1(doc_id, manager_name, comment, is_reject=False):
-    """1차 중간관리자 승인/반려"""
+    """1차 지정 결재자 승인/반려"""
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
@@ -286,7 +289,6 @@ def approve_step2(doc_id, final_approver, comment, is_reject=False):
     return False, "문서를 찾을 수 없습니다."
 
 def submit_expense_report(doc_id, spent_amount, expense_details):
-    """실행 후 지출 내역 및 영수증 증빙 등록"""
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
@@ -301,7 +303,6 @@ def submit_expense_report(doc_id, spent_amount, expense_details):
     return False, "문서를 찾을 수 없습니다."
 
 def finalize_expense(doc_id):
-    """지출 정산 최종 완료 처리"""
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
