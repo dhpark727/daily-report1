@@ -238,3 +238,76 @@ def time_to_minutes(t):
         return 0
     except:
         return 0
+# --- 전자결재 (품의 및 지출정산) 관련 함수 ---
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, content):
+    df = get_data("approvals")
+    new_id = generate_new_id(df)
+    now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
+    new_row = pd.DataFrame([{
+        'id': str(new_id), 'created_at': now_str, 'doc_type': str(doc_type),
+        'title': str(title), 'drafter_name': str(drafter_name), 'department': str(department),
+        'budget': str(budget), 'content': str(content), 'status': '1차결재대기',
+        'manager_name': '', 'manager_comment': '', 'final_approver': '', 'final_comment': '',
+        'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
+    }])
+    save_data("approvals", pd.concat([df, new_row], ignore_index=True))
+    return True, f"[{title}] 품의서가 상신되었습니다. (1차 결재 대기)"
+
+def approve_step1(doc_id, manager_name, comment, is_reject=False):
+    """1차 중간관리자 승인/반려"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            df.at[t_idx, 'manager_name'] = str(manager_name)
+            df.at[t_idx, 'manager_comment'] = str(comment)
+            df.at[t_idx, 'status'] = '1차반려' if is_reject else '최종결재대기'
+            save_data("approvals", df)
+            return True, "1차 반려 처리되었습니다." if is_reject else "1차 승인 완료! 최종 결재로 상신되었습니다."
+    return False, "문서를 찾을 수 없습니다."
+
+def approve_step2(doc_id, final_approver, comment, is_reject=False):
+    """2차 최종 결재자 승인/반려"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            df.at[t_idx, 'final_approver'] = str(final_approver)
+            df.at[t_idx, 'final_comment'] = str(comment)
+            df.at[t_idx, 'status'] = '최종반려' if is_reject else '승인완료(집행가능)'
+            if not is_reject:
+                df.at[t_idx, 'expense_status'] = '정산대기'
+            save_data("approvals", df)
+            return True, "최종 반려 처리되었습니다." if is_reject else "최종 결재 승인이 완료되었습니다. 이제 실행 및 지출 등록이 가능합니다."
+    return False, "문서를 찾을 수 없습니다."
+
+def submit_expense_report(doc_id, spent_amount, expense_details):
+    """실행 후 지출 내역 및 영수증 증빙 등록"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            df.at[t_idx, 'spent_amount'] = str(spent_amount)
+            df.at[t_idx, 'expense_details'] = str(expense_details)
+            df.at[t_idx, 'expense_status'] = '정산검토중'
+            save_data("approvals", df)
+            return True, "지출 정산 내역이 상신되었습니다."
+    return False, "문서를 찾을 수 없습니다."
+
+def finalize_expense(doc_id):
+    """지출 정산 최종 완료 처리"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            df.at[idx[0], 'expense_status'] = '정산완료'
+            save_data("approvals", df)
+            return True, "지출 정산이 최종 마감/승인되었습니다."
+    return False, "문서를 찾을 수 없습니다."
