@@ -82,37 +82,76 @@ def render_report_portal(user_name, user_dept):
                 else: st.info(f"'{search_name}'님으로 등록된 업무보고가 없습니다.")
 
     # --------------------------------
-    # 서브탭 3: 부서장 통합 보고
+    # 서브탭 3: 부서장 통합 보고 (업그레이드)
     # --------------------------------
     with tab_dept:
-        st.subheader("부서 통합 업무보고 취합 및 제출")
-        col1, col2 = st.columns(2)
-        with col1: m_date = st.date_input("확인할 날짜", get_kst_date(), key="m_date")
-        with col2: m_dept = st.selectbox("관리 부서", ["환경사업부", "시스템사업부", "총무부"], key="m_dept")
+        st.subheader(f"👨‍💼 [{user_dept}] 팀원 보고서 취합 및 부서 통합보고")
+        
+        c_filter1, c_filter2 = st.columns(2)
+        with c_filter1: 
+            m_date = st.date_input("확인할 날짜 선택", get_kst_date(), key="m_date")
+        with c_filter2: 
+            dept_list = ["환경사업부", "시스템사업부", "총무부"]
+            idx = dept_list.index(user_dept) if user_dept in dept_list else 0
+            m_dept = st.selectbox("관리 부서", dept_list, index=idx, key="m_dept")
+            
         df = get_data("reports")
         m_df = pd.DataFrame()
         if not df.empty and 'report_date' in df.columns and 'department' in df.columns:
             df['report_date'] = df['report_date'].astype(str)
             m_df = df[(df['report_date'] == str(m_date)) & (df['department'] == m_dept)].copy()
-        st.subheader(f"👥 {m_dept} 팀원 개별 보고 내역")
+            
+        st.markdown("---")
+        st.markdown(f"#### 👥 {m_date} {m_dept} 팀원 개별 제출 현황 (총 {len(m_df)}건)")
+        
         if not m_df.empty:
+            # 팀원 제출 현황 표
             if 'status' not in m_df.columns: m_df['status'] = '제출완료'
             display_m_df = m_df.rename(columns={'name': '이름', 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항', 'status': '승인상태'})
             show_cols = [c for c in ['이름', '금일 실적', '명일 계획', '특이사항', '승인상태'] if c in display_m_df.columns]
             st.dataframe(display_m_df[show_cols], use_container_width=True, hide_index=True)
-        else: st.info("아직 해당 날짜에 제출된 팀원 보고서가 없습니다.")
+            
+            # 팀원 내용 한눈에 보기 카드
+            with st.expander("🔍 팀원별 상세 보고 내용 펼쳐보기", expanded=True):
+                for _, r in m_df.iterrows():
+                    st.markdown(f"**👤 {r.get('name')}** (승인상태: `{r.get('status', '제출완료')}`)")
+                    st.text(f"• 금일 실적: {r.get('today_result', '-')}")
+                    st.text(f"• 명일 계획: {r.get('tomorrow_plan', '-')}")
+                    st.text(f"• 특이사항: {r.get('issue', '-')}")
+                    st.divider()
+        else:
+            st.info(f"{m_date} 일자에 {m_dept} 팀원이 제출한 업무보고서가 없습니다.")
+
+        # 기존에 이미 제출된 통합 보고서가 있는지 확인 후 폼에 불러오기
+        raw_c_df = get_data("consolidated_reports")
+        saved_c_row = None
+        if not raw_c_df.empty and 'report_date' in raw_c_df.columns and 'department' in raw_c_df.columns:
+            raw_c_df['report_date'] = raw_c_df['report_date'].astype(str)
+            existing_c = raw_c_df[(raw_c_df['report_date'] == str(m_date)) & (raw_c_df['department'] == m_dept)]
+            if not existing_c.empty:
+                saved_c_row = existing_c.iloc[0]
+
         st.markdown("---")
-        st.subheader("📝 부서 통합 보고서 작성")
+        st.markdown(f"#### 📝 {m_dept} 부서 통합 보고서 작성 및 부서장 멘트")
+        
         with st.form("consolidated_form", clear_on_submit=False):
-            m_name = st.text_input("부서장 이름", key="m_name")
-            c_today = st.text_area("1. 부서 통합 금일 실적", placeholder="팀원들의 실적을 요약하여 작성해주세요.", height=150)
-            c_tomorrow = st.text_area("2. 부서 통합 명일 계획", height=100)
-            c_issue = st.text_area("3. 특이사항 및 대표님 보고 사항", height=100)
-            if st.form_submit_button("부서 통합 업무보고 제출", type="primary"):
-                if not m_name.strip(): st.error("부서장 이름을 입력해주세요.")
+            m_name = st.text_input("부서장 이름", value=user_name, key="m_name")
+            
+            c_today_val = str(saved_c_row.get('today_result', '')) if saved_c_row is not None else ""
+            c_tomorrow_val = str(saved_c_row.get('tomorrow_plan', '')) if saved_c_row is not None else ""
+            c_issue_val = str(saved_c_row.get('issue', '')) if saved_c_row is not None else ""
+            
+            c_today = st.text_area("1. 부서 통합 금일 실적 요약", value=c_today_val, placeholder="팀원들의 금일 주요 실적을 요약하여 작성해주세요.", height=130)
+            c_tomorrow = st.text_area("2. 부서 통합 명일 계획", value=c_tomorrow_val, placeholder="명일 부서 단위 주요 추진 계획을 입력해주세요.", height=100)
+            c_issue = st.text_area("3. 부서장 총평 멘트 및 특이사항 (대표님 보고용)", value=c_issue_val, placeholder="부서장 총평 멘트, 애로사항 및 대표님 지시 요청 사항을 입력해주세요.", height=110)
+            
+            if st.form_submit_button("📤 부서 통합 업무보고 최종 제출", type="primary", use_container_width=True):
+                if not m_name.strip():
+                    st.error("부서장 이름을 입력해주세요.")
                 else:
                     save_consolidated_report(m_date, m_dept, m_name, c_today, c_tomorrow, c_issue)
-                    st.success(f"{m_dept} 통합 보고서가 등록되었습니다.")
+                    st.success(f"[{m_dept}] {m_date} 부서 통합 업무보고가 성공적으로 제출/갱신되었습니다!")
+                    st.rerun()
 
     # --------------------------------
     # 서브탭 4: 업무 종합 대시보드
