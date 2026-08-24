@@ -6,11 +6,11 @@ from db_manager import (
     submit_expense_report, finalize_expense
 )
 
-# 영수증 파일 세션 캐시 (문서ID별 영수증 이미지 보관)
-if "expense_receipts" not in st.session_state:
-    st.session_state.expense_receipts = {}
-
 def render_approval_tab(user_name, user_dept, user_role):
+    # 세션 상태 안전 초기화
+    if "expense_receipts" not in st.session_state:
+        st.session_state["expense_receipts"] = {}
+
     st.header("📑 전자결재 & 품의 / 지출 정산 관리")
     
     sub1, sub2, sub3 = st.tabs([
@@ -21,10 +21,11 @@ def render_approval_tab(user_name, user_dept, user_role):
     
     users_dict = get_user_credentials()
     all_emp_names = [info['name'] for info in users_dict.values() if info['name'] != user_name]
-    if not all_emp_names: all_emp_names = ["기본관리자"]
+    if not all_emp_names: 
+        all_emp_names = ["기본관리자"]
 
     # --------------------------------
-    # 서브탭 1: 신규 품의서 기안 (1차, 2차 결재자 및 참고자 선택)
+    # 서브탭 1: 신규 품의서 기안
     # --------------------------------
     with sub1:
         st.subheader("새로운 품의서 작성")
@@ -53,7 +54,8 @@ def render_approval_tab(user_name, user_dept, user_role):
                     mgr2_val = "" if target_mgr2 == "선택 안 함" else target_mgr2
                     success, msg = insert_approval_doc(doc_type, title, user_name, user_dept, budget, target_mgr1, mgr2_val, cc_selected, content)
                     if success:
-                        st.success(msg); st.rerun()
+                        st.success(msg)
+                        st.rerun()
                     else:
                         st.error(msg)
 
@@ -66,7 +68,8 @@ def render_approval_tab(user_name, user_dept, user_role):
         
         if not app_df.empty:
             for c in ['target_manager1', 'target_manager2', 'cc_users']:
-                if c not in app_df.columns: app_df[c] = ''
+                if c not in app_df.columns: 
+                    app_df[c] = ''
                 
             display_app = app_df.rename(columns={
                 'created_at': '기안일시', 'doc_type': '구분', 'title': '제목',
@@ -104,7 +107,6 @@ def render_approval_tab(user_name, user_dept, user_role):
                 
                 st.text_area("품의 상세 내용", value=doc.get('content', ''), height=150, disabled=True)
                 
-                # 이전 결재자 코멘트 노출
                 if doc.get('manager1_comment'):
                     st.info(f"🗣️ **1차 승인자({doc.get('manager1_name')}) 코멘트**: {doc.get('manager1_comment')}")
                 if doc.get('manager2_comment'):
@@ -115,48 +117,54 @@ def render_approval_tab(user_name, user_dept, user_role):
                 st.markdown("#### ✍️ 결재 처리")
                 comment_input = st.text_input("결재 코멘트 / 심사의견", key=f"app_comment_{doc_id}")
                 
-                # 1. 1차 결재 단계
+                # 1차 결재
                 if curr_status == '1차결재대기':
                     if user_name == target_m1 or user_role == "admin":
                         b1, b2 = st.columns(2)
                         with b1:
                             if st.button("🔵 1차 승인", type="primary", use_container_width=True):
                                 success, msg = approve_step1(doc_id, user_name, comment_input, is_reject=False)
-                                st.success(msg); st.rerun()
+                                st.success(msg)
+                                st.rerun()
                         with b2:
                             if st.button("❌ 1차 반려", use_container_width=True):
                                 success, msg = approve_step1(doc_id, user_name, comment_input, is_reject=True)
-                                st.warning(msg); st.rerun()
+                                st.warning(msg)
+                                st.rerun()
                     else:
                         st.warning(f"🔒 1차 결재자(**{target_m1}**)만 결재할 수 있습니다.")
                         
-                # 2. 2차 결재 단계
+                # 2차 결재
                 elif curr_status == '2차결재대기':
                     if user_name == target_m2 or user_role == "admin":
                         b1, b2 = st.columns(2)
                         with b1:
                             if st.button("🔵 2차 승인 (최종결재로 상신)", type="primary", use_container_width=True):
                                 success, msg = approve_step2(doc_id, user_name, comment_input, is_reject=False)
-                                st.success(msg); st.rerun()
+                                st.success(msg)
+                                st.rerun()
                         with b2:
                             if st.button("❌ 2차 반려", use_container_width=True):
                                 success, msg = approve_step2(doc_id, user_name, comment_input, is_reject=True)
-                                st.warning(msg); st.rerun()
+                                st.warning(msg)
+                                st.rerun()
                     else:
                         st.warning(f"🔒 2차 결재자(**{target_m2}**)만 결재할 수 있습니다.")
                         
-                # 3. 최종 결재 단계 (Admin / 대표)
+                # 최종 결재
                 elif curr_status == '최종결재대기':
                     if user_role == "admin":
                         b1, b2 = st.columns(2)
                         with b1:
                             if st.button("👑 최종 승인 완료 (집행 허가)", type="primary", use_container_width=True):
                                 success, msg = approve_final(doc_id, user_name, comment_input, is_reject=False)
-                                st.success(msg); st.rerun()
+                                st.success(msg)
+                                st.rerun()
                         with b2:
                             if st.button("❌ 최종 반려", use_container_width=True):
                                 success, msg = approve_final(doc_id, user_name, comment_input, is_reject=True)
-                                st.warning(msg); st.rerun()
+                                st.warning(msg)
+                                st.rerun()
                     else:
                         st.info("🔒 중간 결재가 완료되었습니다. 최종 승인은 대표님(관리자) 권한입니다.")
                 else:
@@ -165,7 +173,7 @@ def render_approval_tab(user_name, user_dept, user_role):
             st.info("상신된 결재 문서가 없습니다.")
 
     # --------------------------------
-    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감 (영수증 업로드 & 총무부 권한)
+    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감
     # --------------------------------
     with sub3:
         st.subheader("💳 품의 실행 완료 건 지출 정산 & 증빙 관리")
@@ -191,18 +199,19 @@ def render_approval_tab(user_name, user_dept, user_role):
                 t_id = doc_options[sel_target]
                 t_row = approved_docs[approved_docs['id'] == t_id].iloc[0]
                 
-                # 영수증 파일 업로더
                 uploaded_receipt = st.file_uploader(
-                    "📎 영수증 / 카드전표 / 세금계산서 증빙 파일 업로드 (이미지 파일)", 
+                    "📎 영수증 / 카드전표 / 세금계산서 증빙 파일 업로드", 
                     type=["png", "jpg", "jpeg", "pdf"], 
                     key=f"receipt_upload_{t_id}"
                 )
+                
+                receipt_dict = st.session_state.get("expense_receipts", {})
                 if uploaded_receipt is not None:
-                    st.session_state.expense_receipts[t_id] = uploaded_receipt
+                    receipt_dict[t_id] = uploaded_receipt
+                    st.session_state["expense_receipts"] = receipt_dict
                     
-                # 기 업로드된 영수증이 있으면 미리보기 표시
-                if t_id in st.session_state.expense_receipts:
-                    st.image(st.session_state.expense_receipts[t_id], caption="📄 첨부된 영수증 증빙 서류", width=400)
+                if t_id in receipt_dict:
+                    st.image(receipt_dict[t_id], caption="📄 첨부된 영수증 증빙 서류", width=400)
                 
                 with st.form(key=f"expense_form_{t_id}"):
                     actual_spent = st.text_input("실제 사용 금액 (원)", value=str(t_row.get('spent_amount', '0')))
@@ -216,14 +225,15 @@ def render_approval_tab(user_name, user_dept, user_role):
                     with b_sub:
                         if st.form_submit_button("📤 지출 내역 상신 (정산 요청)", type="primary", use_container_width=True):
                             success, msg = submit_expense_report(t_id, actual_spent, spent_desc)
-                            st.success(msg); st.rerun()
+                            st.success(msg)
+                            st.rerun()
                     with b_fin:
-                        # 총무부 직원 또는 대표님(admin)만 최종 정산 마감 가능
                         is_finance_manager = (user_role == "admin" or user_dept == "총무부")
                         if is_finance_manager:
                             if st.form_submit_button("👑 [총무부/관리자] 지출 정산 최종 승인 및 마감", use_container_width=True):
                                 success, msg = finalize_expense(t_id)
-                                st.success(msg); st.rerun()
+                                st.success(msg)
+                                st.rerun()
                         else:
                             st.caption("🔒 정산 최종 승인 및 마감은 **총무부** 및 **관리자**만 가능합니다.")
         else:
