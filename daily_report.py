@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
@@ -42,7 +42,6 @@ def generate_new_id(df):
         return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 
-# --- 사용자 계정 관리 함수 ---
 def get_user_credentials():
     users_df = get_data("users")
     credentials = {
@@ -90,9 +89,9 @@ def delete_user(username):
     return False, "계정 정보를 찾을 수 없습니다."
 
 
-# --- 실시간 근태(출퇴근/휴가) 관리 함수 ---
+# --- 실시간 출퇴근 및 기간별 휴가/출장 등록 함수 ---
 def record_attendance(name, department, att_type, note=""):
-    """출근, 퇴근, 연차, 반차 등을 기록합니다."""
+    """당일 출근/퇴근을 기록합니다."""
     df = get_data("live_attendance")
     today_str = str(date.today())
     now_time_str = datetime.now().strftime("%H:%M:%S")
@@ -133,20 +132,51 @@ def record_attendance(name, department, att_type, note=""):
         save_data("live_attendance", df)
         return True, f"[{now_time_str}] 퇴근 체크 완료! 수고하셨습니다."
 
-    else: # 연차, 오전반차, 오후반차, 출장 등
-        if not user_today.empty:
-            idx = user_today.index[0]
-            df.loc[idx, 'type'] = att_type
+def record_leave_range(name, department, leave_type, start_d, end_d, note=""):
+    """단일 일자 또는 여러 날짜 기간 동안의 연차/휴가/출장을 일괄 등록합니다."""
+    df = get_data("live_attendance")
+    if df.empty or 'name' not in df.columns:
+        df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+    
+    df['date'] = df['date'].astype(str)
+    df['name'] = df['name'].astype(str)
+    
+    curr = start_d
+    added_count = 0
+    
+    while curr <= end_d:
+        d_str = str(curr)
+        # 기존 기록 확인
+        existing = df[(df['date'] == d_str) & (df['name'] == str(name))]
+        if not existing.empty:
+            idx = existing.index[0]
+            df.loc[idx, 'type'] = leave_type
             df.loc[idx, 'note'] = note
+            df.loc[idx, 'check_in'] = '-'
+            df.loc[idx, 'check_out'] = '-'
         else:
             new_id = generate_new_id(df)
             new_row = pd.DataFrame([{
-                'id': new_id, 'date': today_str, 'name': name, 'department': department,
-                'type': att_type, 'check_in': '-', 'check_out': '-', 'note': note
+                'id': new_id, 'date': d_str, 'name': name, 'department': department,
+                'type': leave_type, 'check_in': '-', 'check_out': '-', 'note': note
             }])
             df = pd.concat([df, new_row], ignore_index=True)
-        save_data("live_attendance", df)
-        return True, f"오늘 일정이 [{att_type}]로 등록되었습니다."
+        
+        added_count += 1
+        curr += timedelta(days=1)
+        
+    save_data("live_attendance", df)
+    return True, f"{start_d} ~ {end_d} 기간({added_count}일간) 동안 [{leave_type}] 일정이 등록되었습니다."
+
+def delete_attendance(att_id):
+    """근태/휴가 신청 기록을 취소(삭제)합니다."""
+    df = get_data("live_attendance")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        updated_df = df[df['id'] != str(att_id)]
+        save_data("live_attendance", updated_df)
+        return True, "신청 내역이 정상적으로 취소되었습니다."
+    return False, "기록을 찾을 수 없습니다."
 
 
 # --- 보고서 데이터 관리 함수 ---
@@ -305,24 +335,23 @@ with st.sidebar:
 st.title("📋 로커스솔루션 통합 업무 포털")
 
 tab_att, tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "⏰ 출퇴근 & 연차 등록",
-    "✍️ 보고서 작성", 
+    "⏰ 출퇴근 & 연차/출장 등록",
+    "✍️ 업무보고 작성", 
     "🔍 내 보고서 관리", 
     "👨‍💼 부서장 통합 보고", 
-    "📊 종합 대시보드",
-    "📈 월간 근태 분석"
+    "📊 업무 종합 대시보드",
+    "📈 전사 근태 분석 현황"
 ])
 
 # --------------------------------
-# 탭 0: 실시간 출퇴근 및 연차/휴가 등록 (신규 기능)
+# 탭 0: 실시간 출퇴근 & 기간별 연차/출장 등록
 # --------------------------------
 with tab_att:
-    st.header(f"⏰ {user_name}님의 출퇴근 및 근태 관리")
+    st.header(f"⏰ {user_name}님의 근태 관리 센터")
     today_str = str(date.today())
     now_time_display = datetime.now().strftime("%H:%M")
     st.caption(f"📅 오늘 날짜: **{today_str}** | 🕒 현재 시간: **{now_time_display}**")
     
-    # 오늘 나의 근태 현황 불러오기
     live_df = get_data("live_attendance")
     my_status = None
     if not live_df.empty and 'date' in live_df.columns and 'name' in live_df.columns:
@@ -332,8 +361,7 @@ with tab_att:
         if not row.empty:
             my_status = row.iloc[0]
             
-    # 상단 요약 카드
-    st.markdown("#### 📌 오늘 나의 출퇴근 상태")
+    st.markdown("#### 📌 오늘 나의 출퇴근/근태 상태")
     c_st1, c_st2, c_st3, c_st4 = st.columns(4)
     c_st1.metric("근태 유형", my_status['type'] if my_status is not None else "미기록")
     c_st2.metric("출근 시간", my_status['check_in'] if my_status is not None else "-")
@@ -342,11 +370,11 @@ with tab_att:
     
     st.markdown("---")
     
-    col_inout, col_leave = st.columns(2)
+    sub_col1, sub_col2 = st.columns(2)
     
-    # 1. 원클릭 출퇴근 체크
-    with col_inout:
-        st.subheader("🏢 출퇴근 체크")
+    # 1. 당일 출퇴근 체크
+    with sub_col1:
+        st.subheader("🏢 실시간 출퇴근 체크")
         att_note = st.text_input("출퇴근 비고 (선택사항, 예: 외근 후 바로 출근)", key="att_note_input")
         
         btn_c1, btn_c2 = st.columns(2)
@@ -369,16 +397,33 @@ with tab_att:
                 else:
                     st.warning(msg)
 
-    # 2. 연차 / 반차 / 출장 신청
-    with col_leave:
-        st.subheader("🌴 연차 / 반차 / 휴가 / 출장 등록")
+    # 2. 연차 / 반차 / 출장 기간 등록
+    with sub_col2:
+        st.subheader("🌴 연차 / 반차 / 휴가 / 출장 (기간 등록)")
         with st.form("leave_form"):
-            leave_type = st.selectbox("근태 유형 선택", ["연차", "오전반차", "오후반차", "대체휴무", "경조휴가", "출장", "재택근무"])
-            leave_reason = st.text_input("사유 및 목적지 (예: 제주출장, 개인연차)", placeholder="사유를 입력해 주세요")
+            leave_type = st.selectbox("근태 구분 선택", [
+                "연차", "오전반차", "오후반차", "대체휴무", "경조휴가", "출장", "외근", "재택근무"
+            ])
             
-            if st.form_submit_button("근태 등록하기", use_container_width=True, type="primary"):
+            # 날짜 또는 기간 선택
+            date_range = st.date_input("적용 날짜 또는 기간(시작일 ~ 종료일)", value=(date.today(), date.today()))
+            leave_reason = st.text_input("사유 및 목적지 (예: 제주출장, 하계휴가)", placeholder="사유를 입력해 주세요")
+            
+            if st.form_submit_button("근태/휴가 신청하기", use_container_width=True, type="primary"):
                 dept = st.session_state.user_info.get("department", "환경사업부")
-                success, msg = record_attendance(user_name, dept, leave_type, leave_reason)
+                
+                # 단일일자 또는 기간 계산
+                if isinstance(date_range, tuple) or isinstance(date_range, list):
+                    if len(date_range) == 2:
+                        start_d, end_d = date_range[0], date_range[1]
+                    elif len(date_range) == 1:
+                        start_d = end_d = date_range[0]
+                    else:
+                        start_d = end_d = date.today()
+                else:
+                    start_d = end_d = date_range
+                    
+                success, msg = record_leave_range(user_name, dept, leave_type, start_d, end_d, leave_reason)
                 if success:
                     st.success(msg)
                     st.rerun()
@@ -386,19 +431,45 @@ with tab_att:
                     st.error(msg)
                     
     st.markdown("---")
-    st.subheader("📋 오늘의 전 직원 근태 현황")
-    if not live_df.empty:
-        today_all = live_df[live_df['date'] == today_str].copy()
-        if not today_all.empty:
-            display_live = today_all.rename(columns={
-                'name': '이름', 'department': '부서', 'type': '구분', 
-                'check_in': '출근시간', 'check_out': '퇴근시간', 'note': '비고'
-            })[['부서', '이름', '구분', '출근시간', '퇴근시간', '비고']]
-            st.dataframe(display_live, use_container_width=True, hide_index=True)
+    
+    # 3. 내 신청 내역 조회 & 취소 및 오늘의 전 직원 현황
+    sub_tab_me, sub_tab_all = st.tabs(["📝 나의 최근 근태/휴가 신청 내역", "👥 오늘 전 직원 출근 & 근태 현황"])
+    
+    with sub_tab_me:
+        if not live_df.empty and 'name' in live_df.columns:
+            my_records = live_df[live_df['name'] == user_name].copy()
+            if not my_records.empty:
+                my_records = my_records.sort_values(by='date', ascending=False)
+                show_my = my_records.rename(columns={'date': '날짜', 'type': '구분', 'check_in': '출근시간', 'check_out': '퇴근시간', 'note': '사유/비고'})
+                st.dataframe(show_my[['날짜', '구분', '출근시간', '퇴근시간', '사유/비고']], use_container_width=True, hide_index=True)
+                
+                # 취소 패널
+                with st.expander("🗑️ 등록한 근태/휴가 일정 취소하기"):
+                    options = {f"{r['date']} - {r['type']} ({r.get('note', '')})": r['id'] for _, r in my_records.iterrows() if 'id' in r}
+                    target_cancel = st.selectbox("취소할 일정을 선택하세요", list(options.keys()))
+                    if st.button("신청 취소하기"):
+                        if target_cancel:
+                            c_id = options[target_cancel]
+                            success, msg = delete_attendance(c_id)
+                            if success:
+                                st.success(msg)
+                                st.rerun()
+            else:
+                st.info("등록된 나의 근태 기록이 없습니다.")
         else:
-            st.info("오늘 아직 등록된 출퇴근/휴가 기록이 없습니다.")
-    else:
-        st.info("근태 기록 데이터가 없습니다.")
+            st.info("근태 데이터가 없습니다.")
+            
+    with sub_tab_all:
+        if not live_df.empty:
+            today_all = live_df[live_df['date'] == today_str].copy()
+            if not today_all.empty:
+                display_live = today_all.rename(columns={
+                    'name': '이름', 'department': '부서', 'type': '구분', 
+                    'check_in': '출근시간', 'check_out': '퇴근시간', 'note': '비고'
+                })[['부서', '이름', '구분', '출근시간', '퇴근시간', '비고']]
+                st.dataframe(display_live, use_container_width=True, hide_index=True)
+            else:
+                st.info("오늘 아직 등록된 출퇴근/휴가 기록이 없습니다.")
 
 # --------------------------------
 # 탭 1: 보고서 작성
@@ -628,90 +699,121 @@ with tab4:
             st.info("해당 조건으로 제출된 개별 보고서가 없습니다.")
 
 # --------------------------------
-# 탭 5: 월간 근태 분석 (엑셀 업로드 분석)
+# 탭 5: 전사 근태 분석 현황 (시스템 연동 + 엑셀 분석)
 # --------------------------------
 with tab5:
-    st.header("📈 임직원 월간 근태 분석 & 관리")
-    st.caption("로커스솔루션 근태기록 엑셀 파일(.xlsx)을 업로드하면 자동으로 통계 및 이상 근태를 분석합니다.")
+    st.header("📈 전사 근태 분석 & 관리")
     
-    uploaded_file = st.file_uploader("월간 근태기록 엑셀 파일 업로드", type=["xlsx", "xls"], key="attendance_uploader")
+    sub_an1, sub_an2 = st.tabs(["⚡ 시스템 등록 실시간 근태 현황", "📁 월간 근태기록 엑셀 심층 분석"])
     
-    if uploaded_file is not None:
-        try:
-            att_df = pd.read_excel(uploaded_file, sheet_name=0)
-            req_cols = ['근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
-            if all(col in att_df.columns for col in req_cols):
+    # 1. 시스템 내부 등록 데이터 현황
+    with sub_an1:
+        st.subheader("시스템 등록 출퇴근 및 휴가/출장 누적 기록")
+        raw_att = get_data("live_attendance")
+        if not raw_att.empty:
+            f_col1, f_col2 = st.columns(2)
+            with f_col1:
+                sel_dept = st.selectbox("부서 필터", ["전체", "환경사업부", "시스템사업부", "총무부"], key="att_dash_dept")
+            with f_col2:
+                sel_type = st.selectbox("근태 유형 필터", ["전체", "근무", "연차", "오전반차", "오후반차", "출장", "대체휴무", "경조휴가", "외근", "재택근무"], key="att_dash_type")
                 
-                att_df['총근무_분'] = att_df['총근무시간'].apply(time_to_minutes)
-                att_df['연장근무_분'] = att_df['연장근무시간'].apply(time_to_minutes)
-                att_df['지각여부'] = att_df['출근판정'] == '지각'
-                att_df['결근여부'] = att_df['출근판정'] == '결근'
-                att_df['조퇴여부'] = att_df['퇴근판정'] == '조퇴'
+            filtered_att = raw_att.copy()
+            if sel_dept != "전체" and 'department' in filtered_att.columns:
+                filtered_att = filtered_att[filtered_att['department'] == sel_dept]
+            if sel_type != "전체" and 'type' in filtered_att.columns:
+                filtered_att = filtered_att[filtered_att['type'] == sel_type]
                 
-                total_emps = att_df['이름'].nunique()
-                total_work_hours = att_df['총근무_분'].sum() / 60
-                total_over_hours = att_df['연장근무_분'].sum() / 60
-                total_late_cnt = att_df['지각여부'].sum()
-                total_early_cnt = att_df['조퇴여부'].sum()
-                
-                st.markdown("### 📊 전체 근태 종합 요약")
-                kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-                kpi1.metric("총 대상 인원", f"{total_emps}명")
-                kpi2.metric("총 근무 시간", f"{total_work_hours:,.1f}시간")
-                kpi3.metric("총 연장근무", f"{total_over_hours:,.1f}시간")
-                kpi4.metric("총 지각 발생", f"{total_late_cnt}건")
-                kpi5.metric("총 조퇴 발생", f"{total_early_cnt}건")
-                
-                st.markdown("---")
-                
-                emp_summary = att_df.groupby('이름').agg(
-                    근무일수=('근무일자', 'count'),
-                    정상출근일수=('출근판정', lambda x: (x == '정상출근').sum()),
-                    지각횟수=('지각여부', 'sum'),
-                    조퇴횟수=('조퇴여부', 'sum'),
-                    출장휴가등_결근=('결근여부', 'sum'),
-                    총근무시간=('총근무_분', lambda x: round(sum(x) / 60, 1)),
-                    총연장근무=('연장근무_분', lambda x: round(sum(x) / 60, 1))
-                ).reset_index()
-                
-                emp_summary = emp_summary.sort_values(by='총근무시간', ascending=False).reset_index(drop=True)
-                
-                sub_tab1, sub_tab2 = st.tabs(["🏆 직원별 근태 순위 요약", "🔍 개인별 상세 출퇴근 타임라인"])
-                
-                with sub_tab1:
-                    st.subheader("직원별 근태 통계 순위")
-                    display_summary = emp_summary.rename(columns={
-                        '이름': '직원명', '근무일수': '기록일수', '정상출근일수': '정상 출근',
-                        '지각횟수': '지각(회)', '조퇴횟수': '조퇴(회)', '출장휴가등_결근': '출장/휴가(결근)',
-                        '총근무시간': '총 근무(시간)', '총연장근무': '연장근무(시간)'
-                    })
-                    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+            filtered_att = filtered_att.sort_values(by='date', ascending=False)
+            show_df = filtered_att.rename(columns={
+                'date': '날짜', 'name': '이름', 'department': '부서', 'type': '구분',
+                'check_in': '출근시간', 'check_out': '퇴근시간', 'note': '사유/비고'
+            })
+            valid_cols = [c for c in ['날짜', '부서', '이름', '구분', '출근시간', '퇴근시간', '사유/비고'] if c in show_df.columns]
+            st.dataframe(show_df[valid_cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("현재 시스템에 누적된 출퇴근/휴가 기록이 없습니다.")
+            
+    # 2. 엑셀 파일 심층 분석
+    with sub_an2:
+        st.caption("로커스솔루션 근태 엑셀 파일(.xlsx)을 업로드하면 지각/조퇴/연장근무/출장 등을 종합 분석합니다.")
+        uploaded_file = st.file_uploader("월간 근태기록 엑셀 파일 업로드", type=["xlsx", "xls"], key="attendance_uploader")
+        
+        if uploaded_file is not None:
+            try:
+                att_df = pd.read_excel(uploaded_file, sheet_name=0)
+                req_cols = ['근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
+                if all(col in att_df.columns for col in req_cols):
                     
-                    st.markdown("#### 💡 관리자 점검 체크포인트")
-                    c_warn1, c_warn2 = st.columns(2)
-                    with c_warn1:
-                        over_top = emp_summary.sort_values(by='총연장근무', ascending=False).head(3)
-                        st.info(f"🔥 **연장근무 상위자 Top 3**: " + ", ".join([f"{r['이름']} ({r['총연장근무']}h)" for _, r in over_top.iterrows()]))
-                    with c_warn2:
-                        late_top = emp_summary[emp_summary['지각횟수'] > 0].sort_values(by='지각횟수', ascending=False)
-                        if not late_top.empty:
-                            st.warning(f"⚠️ **지각 발생 인원**: " + ", ".join([f"{r['이름']} ({r['지각횟수']}회)" for _, r in late_top.iterrows()]))
-                        else:
-                            st.success("✅ 지각자가 없습니다.")
-                            
-                with sub_tab2:
-                    st.subheader("개인별 상세 출퇴근 기록")
-                    selected_emp = st.selectbox("조회할 직원을 선택하세요", emp_summary['이름'].tolist(), key="att_emp_select")
+                    att_df['총근무_분'] = att_df['총근무시간'].apply(time_to_minutes)
+                    att_df['연장근무_분'] = att_df['연장근무시간'].apply(time_to_minutes)
+                    att_df['지각여부'] = att_df['출근판정'] == '지각'
+                    att_df['결근여부'] = att_df['출근판정'] == '결근'
+                    att_df['조퇴여부'] = att_df['퇴근판정'] == '조퇴'
                     
-                    if selected_emp:
-                        user_att = att_df[att_df['이름'] == selected_emp].copy()
-                        user_att['근무일자'] = user_att['근무일자'].astype(str)
-                        show_cols = ['근무일자', '출근시간', '퇴근시간', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
-                        present_cols = [c for c in show_cols if c in user_att.columns]
-                        st.dataframe(user_att[present_cols], use_container_width=True, hide_index=True)
-            else:
-                st.error("엑셀 파일 양식이 맞지 않습니다. ('근무일자', '이름', '출근판정', '총근무시간' 컬럼이 포함되어야 합니다.)")
-        except Exception as e:
-            st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
-    else:
-        st.info("👆 위 파일 업로더에 근태 엑셀 파일(예: 2026년 7월.xlsx)을 업로드해 주세요.")
+                    total_emps = att_df['이름'].nunique()
+                    total_work_hours = att_df['총근무_분'].sum() / 60
+                    total_over_hours = att_df['연장근무_분'].sum() / 60
+                    total_late_cnt = att_df['지각여부'].sum()
+                    total_early_cnt = att_df['조퇴여부'].sum()
+                    
+                    st.markdown("### 📊 전체 근태 종합 요약")
+                    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+                    kpi1.metric("총 대상 인원", f"{total_emps}명")
+                    kpi2.metric("총 근무 시간", f"{total_work_hours:,.1f}시간")
+                    kpi3.metric("총 연장근무", f"{total_over_hours:,.1f}시간")
+                    kpi4.metric("총 지각 발생", f"{total_late_cnt}건")
+                    kpi5.metric("총 조퇴 발생", f"{total_early_cnt}건")
+                    
+                    st.markdown("---")
+                    
+                    emp_summary = att_df.groupby('이름').agg(
+                        근무일수=('근무일자', 'count'),
+                        정상출근일수=('출근판정', lambda x: (x == '정상출근').sum()),
+                        지각횟수=('지각여부', 'sum'),
+                        조퇴횟수=('조퇴여부', 'sum'),
+                        출장휴가등_결근=('결근여부', 'sum'),
+                        총근무시간=('총근무_분', lambda x: round(sum(x) / 60, 1)),
+                        총연장근무=('연장근무_분', lambda x: round(sum(x) / 60, 1))
+                    ).reset_index()
+                    
+                    emp_summary = emp_summary.sort_values(by='총근무시간', ascending=False).reset_index(drop=True)
+                    
+                    e_tab1, e_tab2 = st.tabs(["🏆 직원별 근태 순위 요약", "🔍 개인별 상세 출퇴근 타임라인"])
+                    
+                    with e_tab1:
+                        st.subheader("직원별 근태 통계 순위")
+                        display_summary = emp_summary.rename(columns={
+                            '이름': '직원명', '근무일수': '기록일수', '정상출근일수': '정상 출근',
+                            '지각횟수': '지각(회)', '조퇴횟수': '조퇴(회)', '출장휴가등_결근': '출장/휴가(결근)',
+                            '총근무시간': '총 근무(시간)', '총연장근무': '연장근무(시간)'
+                        })
+                        st.dataframe(display_summary, use_container_width=True, hide_index=True)
+                        
+                        st.markdown("#### 💡 관리자 점검 체크포인트")
+                        c_warn1, c_warn2 = st.columns(2)
+                        with c_warn1:
+                            over_top = emp_summary.sort_values(by='총연장근무', ascending=False).head(3)
+                            st.info(f"🔥 **연장근무 상위자 Top 3**: " + ", ".join([f"{r['이름']} ({r['총연장근무']}h)" for _, r in over_top.iterrows()]))
+                        with c_warn2:
+                            late_top = emp_summary[emp_summary['지각횟수'] > 0].sort_values(by='지각횟수', ascending=False)
+                            if not late_top.empty:
+                                st.warning(f"⚠️ **지각 발생 인원**: " + ", ".join([f"{r['이름']} ({r['지각횟수']}회)" for _, r in late_top.iterrows()]))
+                            else:
+                                st.success("✅ 지각자가 없습니다.")
+                                
+                    with e_tab2:
+                        st.subheader("개인별 상세 출퇴근 기록")
+                        selected_emp = st.selectbox("조회할 직원을 선택하세요", emp_summary['이름'].tolist(), key="att_emp_select")
+                        
+                        if selected_emp:
+                            user_att = att_df[att_df['이름'] == selected_emp].copy()
+                            user_att['근무일자'] = user_att['근무일자'].astype(str)
+                            show_cols = ['근무일자', '출근시간', '퇴근시간', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
+                            present_cols = [c for c in show_cols if c in user_att.columns]
+                            st.dataframe(user_att[present_cols], use_container_width=True, hide_index=True)
+                else:
+                    st.error("엑셀 파일 양식이 맞지 않습니다. ('근무일자', '이름', '출근판정', '총근무시간' 컬럼이 포함되어야 합니다.)")
+            except Exception as e:
+                st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+        else:
+            st.info("👆 위 파일 업로더에 근태 엑셀 파일(예: 2026년 7월.xlsx)을 업로드해 주세요.")
