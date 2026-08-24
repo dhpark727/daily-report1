@@ -4,13 +4,14 @@ from datetime import date, datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
-# 1. 구글 스프레드시트 연동 및 데이터 관리 함수
+# 1. 구글 스프레드시트 연동 및 데이터 관리 함수 (캐싱 적용으로 429 에러 방지)
 # --------------------------------
-def get_data(worksheet_name):
-    """구글 시트에서 데이터를 불러옵니다."""
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_sheet_data(worksheet_name):
+    """구글 시트에서 데이터를 읽어오고 60초간 캐시합니다."""
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
-        df = conn.read(worksheet=worksheet_name, ttl=0)
+        df = conn.read(worksheet=worksheet_name, ttl=60)
         df = df.dropna(how="all")
         if df.empty:
             if worksheet_name == "reports":
@@ -22,23 +23,33 @@ def get_data(worksheet_name):
             elif worksheet_name == "live_attendance":
                 df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
         else:
-            # 안전을 위해 모든 결측치(NaN) 빈 문자열 처리 및 문자열 타입 변환
             df = df.fillna("")
             for col in df.columns:
                 df[col] = df[col].astype(str)
         return df
     except Exception as e:
-        st.error(f"구글 시트 연결 오류 ({worksheet_name}): {e}")
+        # API 쿼터 초과(429) 발생 시 빈 DataFrame 반환
         return pd.DataFrame()
 
+def get_data(worksheet_name):
+    df = fetch_sheet_data(worksheet_name)
+    if df.empty:
+        if worksheet_name == "reports":
+            return pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue', 'status', 'comment'])
+        elif worksheet_name == "consolidated_reports":
+            return pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
+        elif worksheet_name == "users":
+            return pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
+        elif worksheet_name == "live_attendance":
+            return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+    return df.copy()
 
 def save_data(worksheet_name, df):
-    """구글 시트에 데이터를 저장합니다."""
+    """구글 시트에 데이터를 저장하고 캐시를 초기화합니다."""
     conn = st.connection("gsheets", type=GSheetsConnection)
     df = df.fillna("")
     conn.update(worksheet=worksheet_name, data=df)
     st.cache_data.clear()
-
 
 def generate_new_id(df):
     if df.empty or 'id' not in df.columns:
@@ -46,7 +57,6 @@ def generate_new_id(df):
     else:
         max_id = pd.to_numeric(df['id'], errors='coerce').max()
         return str(int(max_id) + 1 if pd.notna(max_id) else 1)
-
 
 def get_user_credentials():
     users_df = get_data("users")
@@ -93,7 +103,6 @@ def delete_user(username):
         save_data("users", updated_df)
         return True, f"'{username}' 계정이 삭제되었습니다."
     return False, "계정 정보를 찾을 수 없습니다."
-
 
 # --- 실시간 출퇴근 및 기간별 휴가/출장 등록 함수 ---
 def record_attendance(name, department, att_type, note=""):
@@ -180,7 +189,6 @@ def delete_attendance(att_id):
         return True, "신청 내역이 정상적으로 취소되었습니다."
     return False, "기록을 찾을 수 없습니다."
 
-
 # --- 보고서 데이터 관리 함수 ---
 def insert_report(report_date, department, name, today_result, tomorrow_plan, issue):
     df = get_data("reports")
@@ -192,7 +200,6 @@ def insert_report(report_date, department, name, today_result, tomorrow_plan, is
     }])
     updated_df = pd.concat([df, new_row], ignore_index=True)
     save_data("reports", updated_df)
-
 
 def save_consolidated_report(report_date, department, manager_name, today_result, tomorrow_plan, issue):
     df = get_data("consolidated_reports")
@@ -208,12 +215,9 @@ def save_consolidated_report(report_date, department, manager_name, today_result
     updated_df = pd.concat([df, new_row], ignore_index=True)
     save_data("consolidated_reports", updated_df)
 
-
 def update_report_full(report_id, today_result, tomorrow_plan, issue, status, comment):
-    """보고서 수정 및 최종 승인 처리 (타입 오류 방어 적용)"""
     df = get_data("reports")
     if not df.empty and 'id' in df.columns:
-        # 컬럼 미존재 시 생성 및 object(문자열) 타입 보장
         for col in ['status', 'comment', 'today_result', 'tomorrow_plan', 'issue']:
             if col not in df.columns:
                 df[col] = ""
@@ -229,7 +233,6 @@ def update_report_full(report_id, today_result, tomorrow_plan, issue, status, co
             df.at[target_idx, 'status'] = str(status)
             df.at[target_idx, 'comment'] = str(comment)
             save_data("reports", df)
-
 
 def update_report(report_id, today_result, tomorrow_plan, issue):
     df = get_data("reports")
@@ -248,14 +251,12 @@ def update_report(report_id, today_result, tomorrow_plan, issue):
             df.at[target_idx, 'issue'] = str(issue)
             save_data("reports", df)
 
-
 def delete_report(report_id):
     df = get_data("reports")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
         updated_df = df[df['id'] != str(report_id)]
         save_data("reports", updated_df)
-
 
 def time_to_minutes(t):
     if pd.isna(t): return 0
@@ -267,7 +268,6 @@ def time_to_minutes(t):
         return 0
     except:
         return 0
-
 
 # --------------------------------
 # 2. 웹 페이지 기본 구성 & 로그인 검증
