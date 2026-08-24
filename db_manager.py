@@ -239,40 +239,65 @@ def time_to_minutes(t):
     except:
         return 0
         
-# --- 전자결재 (지정 결재자 체계 적용) ---
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_manager, content):
-    """기안 시 1차 승인 대상자를 지정하여 상신"""
+# --- 전자결재 (2단계 결재 + 참고자 + 지출정산) ---
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, cc_users, content):
     df = get_data("approvals")
     new_id = generate_new_id(df)
     now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
+    
+    # 2차 결재자가 없으면 다음 단계는 '최종결재대기', 있으면 '1차결재대기'
     new_row = pd.DataFrame([{
         'id': str(new_id), 'created_at': now_str, 'doc_type': str(doc_type),
         'title': str(title), 'drafter_name': str(drafter_name), 'department': str(department),
         'budget': str(budget), 'content': str(content), 'status': '1차결재대기',
-        'target_manager': str(target_manager),  # 지정된 1차 결재자
-        'manager_name': '', 'manager_comment': '', 'final_approver': '', 'final_comment': '',
+        'target_manager1': str(target_mgr1),
+        'target_manager2': str(target_mgr2) if target_mgr2 else "없음",
+        'cc_users': str(", ".join(cc_users)) if cc_users else "없음",
+        'manager1_name': '', 'manager1_comment': '',
+        'manager2_name': '', 'manager2_comment': '',
+        'final_approver': '', 'final_comment': '',
         'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
     }])
     save_data("approvals", pd.concat([df, new_row], ignore_index=True))
-    return True, f"[{title}] 품의서가 상신되었습니다. (1차 결재자: {target_manager})"
+    return True, f"[{title}] 품의서가 상신되었습니다."
 
 def approve_step1(doc_id, manager_name, comment, is_reject=False):
-    """1차 지정 결재자 승인/반려"""
+    """1차 결재 승인/반려"""
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
             t_idx = idx[0]
-            df.at[t_idx, 'manager_name'] = str(manager_name)
-            df.at[t_idx, 'manager_comment'] = str(comment)
-            df.at[t_idx, 'status'] = '1차반려' if is_reject else '최종결재대기'
+            df.at[t_idx, 'manager1_name'] = str(manager_name)
+            df.at[t_idx, 'manager1_comment'] = str(comment)
+            if is_reject:
+                df.at[t_idx, 'status'] = '1차반려'
+            else:
+                # 2차 결재자가 있으면 2차결재대기, 없으면 최종결재대기
+                has_mgr2 = str(df.at[t_idx, 'target_manager2']).strip() not in ["", "없음", "선택 안 함"]
+                df.at[t_idx, 'status'] = '2차결재대기' if has_mgr2 else '최종결재대기'
             save_data("approvals", df)
-            return True, "1차 반려 처리되었습니다." if is_reject else "1차 승인 완료! 최종 결재로 상신되었습니다."
+            return True, "1차 반려 처리되었습니다." if is_reject else "1차 승인이 완료되었습니다."
     return False, "문서를 찾을 수 없습니다."
 
-def approve_step2(doc_id, final_approver, comment, is_reject=False):
-    """2차 최종 결재자 승인/반려"""
+def approve_step2(doc_id, manager_name, comment, is_reject=False):
+    """2차 중간 결재 승인/반려"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            df.at[t_idx, 'manager2_name'] = str(manager_name)
+            df.at[t_idx, 'manager2_comment'] = str(comment)
+            df.at[t_idx, 'status'] = '2차반려' if is_reject else '최종결재대기'
+            save_data("approvals", df)
+            return True, "2차 반려 처리되었습니다." if is_reject else "2차 승인 완료! 최종 결재로 상신되었습니다."
+    return False, "문서를 찾을 수 없습니다."
+
+def approve_final(doc_id, final_approver, comment, is_reject=False):
+    """최종 결재자(대표) 승인/반려"""
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
@@ -285,7 +310,7 @@ def approve_step2(doc_id, final_approver, comment, is_reject=False):
             if not is_reject:
                 df.at[t_idx, 'expense_status'] = '정산대기'
             save_data("approvals", df)
-            return True, "최종 반려 처리되었습니다." if is_reject else "최종 결재 승인이 완료되었습니다. 이제 실행 및 지출 등록이 가능합니다."
+            return True, "최종 반려되었습니다." if is_reject else "최종 결재 완료! 집행 및 지출 정산이 가능합니다."
     return False, "문서를 찾을 수 없습니다."
 
 def submit_expense_report(doc_id, spent_amount, expense_details):
