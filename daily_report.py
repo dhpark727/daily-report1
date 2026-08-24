@@ -1,11 +1,10 @@
 import streamlit as st
 from db_manager import get_user_credentials, add_user, delete_user, get_data
+from tab_approval import render_approval_tab
 from tab_attendance import render_attendance_tab
-from tab_reports import render_report_create_tab, render_my_reports_tab, render_consolidated_tab
-from tab_dashboard import render_work_dashboard_tab, render_attendance_analysis_tab
-from tab_approval import render_approval_tab  # 신규 추가
+from tab_reports import render_report_portal
 
-st.set_page_config(page_title="로커스솔루션 업무 & 근태 관리", layout="wide")
+st.set_page_config(page_title="로커스솔루션 통합 업무 포털", layout="wide")
 
 # 세션 초기화
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
@@ -71,26 +70,14 @@ with st.sidebar:
                     if success: st.warning(msg); st.rerun()
                     else: st.error(msg)
 
-user_name = st.session_state.user_info.get('name', '사용자')
-user_dept = st.session_state.user_info.get('department', '환경사업부')
-user_role = st.session_state.user_info.get('role', 'user')
-
-# 메인 탭 렌더링 (결재 탭 추가)
+# 메인 3대 포털 탭
 st.title("📋 로커스솔루션 통합 업무 포털")
-tab_app, tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+main_tab1, main_tab2, main_tab3 = st.tabs([
     "📑 전자결재 & 지출품의",
-    "⏰ 출퇴근 & 연차/출장 등록", 
-    "✍️ 업무보고 작성", 
-    "🔍 내 보고서 관리",
-    "👨‍💼 부서장 통합 보고", 
-    "📊 업무 종합 대시보드", 
-    "📈 전사 근태 분석 현황"
+    "⏰ 근태 관리 포털",
+    "📋 업무보고 관리 포털"
 ])
 
-with tab_app: render_approval_tab(user_name, user_dept, user_role)
-with tab0: render_attendance_tab(user_name, user_dept)
-with tab1: render_report_create_tab(user_name, user_dept)
-with tab2: render_my_reports_tab(user_name)
-with tab3: render_consolidated_tab()
-with tab4: render_work_dashboard_tab(user_name)
-with tab5: render_attendance_analysis_tab()
+with main_tab1: render_approval_tab(user_name, user_dept, user_role)
+with main_tab2: render_attendance_tab(user_name, user_dept)
+with main_tab3: render_report_portal(user_name, user_dept)
