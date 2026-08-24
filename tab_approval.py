@@ -30,7 +30,6 @@ def render_approval_tab(user_name, user_dept, user_role):
     with sub1:
         st.subheader("새로운 품의서 작성")
         
-        # 기안 상신 성공 알림 메시지 노출 영역
         if st.session_state.get("approval_submitted_msg"):
             st.success(st.session_state["approval_submitted_msg"])
             st.session_state["approval_submitted_msg"] = None
@@ -123,7 +122,6 @@ def render_approval_tab(user_name, user_dept, user_role):
                 st.markdown("#### ✍️ 결재 처리")
                 comment_input = st.text_input("결재 코멘트 / 심사의견", key=f"app_comment_{doc_id}")
                 
-                # 1차 결재
                 if curr_status == '1차결재대기':
                     if user_name == target_m1 or user_role == "admin":
                         b1, b2 = st.columns(2)
@@ -140,7 +138,6 @@ def render_approval_tab(user_name, user_dept, user_role):
                     else:
                         st.warning(f"🔒 1차 결재자(**{target_m1}**)만 결재할 수 있습니다.")
                         
-                # 2차 결재
                 elif curr_status == '2차결재대기':
                     if user_name == target_m2 or user_role == "admin":
                         b1, b2 = st.columns(2)
@@ -157,7 +154,6 @@ def render_approval_tab(user_name, user_dept, user_role):
                     else:
                         st.warning(f"🔒 2차 결재자(**{target_m2}**)만 결재할 수 있습니다.")
                         
-                # 최종 결재
                 elif curr_status == '최종결재대기':
                     if user_role == "admin":
                         b1, b2 = st.columns(2)
@@ -179,7 +175,7 @@ def render_approval_tab(user_name, user_dept, user_role):
             st.info("상신된 결재 문서가 없습니다.")
 
     # --------------------------------
-    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감
+    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감 (표 클릭 시 자동 연동)
     # --------------------------------
     with sub3:
         st.subheader("💳 품의 실행 완료 건 지출 정산 & 증빙 관리")
@@ -187,79 +183,100 @@ def render_approval_tab(user_name, user_dept, user_role):
         approved_docs = app_df[app_df['status'] == '승인완료(집행가능)'].copy() if not app_df.empty else pd.DataFrame()
         
         if not approved_docs.empty:
-            st.write("**[정산 대상 품의서 목록]**")
-            st.dataframe(
-                approved_docs[['created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
-                    columns={'created_at': '기안일', 'title': '품의명', 'drafter_name': '기안자', 'department': '부서', 'budget': '승인예산', 'spent_amount': '실집행액', 'expense_status': '정산상태'}
-                ),
-                use_container_width=True, hide_index=True
+            st.markdown("#### 📋 [정산 대상 품의서 목록]")
+            st.caption("💡 표에서 정산할 품의서 행(Row)을 마우스로 클릭하면, 하단 폼에 해당 품의서의 내용이 자동으로 로드됩니다.")
+            
+            display_approved = approved_docs[['created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
+                columns={
+                    'created_at': '기안일', 'title': '품의명', 'drafter_name': '기안자',
+                    'department': '부서', 'budget': '승인예산(원)', 'spent_amount': '실집행액(원)', 'expense_status': '정산상태'
+                }
+            ).reset_index(drop=True)
+            
+            # 표 클릭 이벤트 활성화
+            selection = st.dataframe(
+                display_approved,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row"
             )
             
-            st.markdown("---")
-            st.subheader("📝 실 지출내역 및 영수증 증빙 등록")
+            selected_rows = selection.selection.rows
             
-            doc_options = {f"[{r['id']}] {r['title']} (승인예산: {r['budget']}원)": r['id'] for _, r in approved_docs.iterrows()}
-            sel_target = st.selectbox("지출 등록/검토할 품의서를 선택하세요", list(doc_options.keys()))
-            
-            if sel_target:
-                t_id = doc_options[sel_target]
-                t_row = approved_docs[approved_docs['id'] == t_id].iloc[0]
+            # 표에서 행을 선택한 경우 또는 기본 첫 번째 행 지정
+            if selected_rows:
+                selected_idx = selected_rows[0]
+                t_row = approved_docs.iloc[selected_idx]
+            else:
+                t_row = approved_docs.iloc[0]
                 
-                uploaded_receipt = st.file_uploader(
-                    "📎 영수증 / 카드전표 / 세금계산서 증빙 파일 업로드", 
-                    type=["png", "jpg", "jpeg", "pdf"], 
-                    key=f"receipt_upload_{t_id}"
+            t_id = str(t_row['id'])
+            
+            st.markdown("---")
+            st.subheader(f"📝 [{t_row.get('title')}] 실 지출내역 및 증빙 관리")
+            
+            c_info1, c_info2, c_info3 = st.columns(3)
+            c_info1.info(f"**기안자**: {t_row.get('drafter_name')} ({t_row.get('department')})")
+            c_info2.info(f"**승인 예산**: {t_row.get('budget')} 원")
+            c_info3.info(f"**정산 진행상태**: `{t_row.get('expense_status', '정산대기')}`")
+            
+            # 영수증 파일 업로더
+            uploaded_receipt = st.file_uploader(
+                "📎 영수증 / 카드전표 / 세금계산서 증빙 파일 업로드", 
+                type=["png", "jpg", "jpeg", "pdf"], 
+                key=f"receipt_upload_{t_id}"
+            )
+            
+            receipt_dict = st.session_state.get("expense_receipts", {})
+            if uploaded_receipt is not None:
+                receipt_dict[t_id] = uploaded_receipt
+                st.session_state["expense_receipts"] = receipt_dict
+                
+            # 영수증 미리보기 및 다운로드
+            if t_id in receipt_dict:
+                file_obj = receipt_dict[t_id]
+                file_name = file_obj.name.lower()
+                if file_name.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    try:
+                        st.image(file_obj, caption=f"📄 첨부된 영수증 이미지 ({file_obj.name})", width=400)
+                    except Exception:
+                        st.info(f"📄 첨부된 영수증 파일: **{file_obj.name}**")
+                elif file_name.endswith('.pdf'):
+                    st.info(f"📄 첨부된 PDF 증빙 문서: **{file_obj.name}**")
+                    file_obj.seek(0)
+                    st.download_button(
+                        label="📥 첨부된 PDF 문서 다운로드하여 열람",
+                        data=file_obj.read(),
+                        file_name=file_obj.name,
+                        mime="application/pdf",
+                        key=f"download_pdf_{t_id}"
+                    )
+                else:
+                    st.info(f"📄 첨부된 증빙 파일: **{file_obj.name}**")
+            
+            with st.form(key=f"expense_form_{t_id}"):
+                actual_spent = st.text_input("실제 사용 금액 (원)", value=str(t_row.get('spent_amount', '0')))
+                spent_desc = st.text_area(
+                    "지출 세부 내역 (품목, 수량, 거래처, 계좌번호 등)", 
+                    value=str(t_row.get('expense_details', '')),
+                    placeholder="예: 영수증 번호 2026-08 / 우리카드 법인결제 / 세금계산서 발행 완료"
                 )
                 
-                receipt_dict = st.session_state.get("expense_receipts", {})
-                if uploaded_receipt is not None:
-                    receipt_dict[t_id] = uploaded_receipt
-                    st.session_state["expense_receipts"] = receipt_dict
-                    
-                # 안전한 영수증/문서 미리보기 및 다운로드 처리 (PDF / Image 분기)
-                if t_id in receipt_dict:
-                    file_obj = receipt_dict[t_id]
-                    file_name = file_obj.name.lower()
-                    if file_name.endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                        try:
-                            st.image(file_obj, caption=f"📄 첨부된 영수증 이미지 ({file_obj.name})", width=400)
-                        except Exception:
-                            st.info(f"📄 첨부된 영수증 파일: **{file_obj.name}**")
-                    elif file_name.endswith('.pdf'):
-                        st.info(f"📄 첨부된 PDF 증빙 문서: **{file_obj.name}**")
-                        file_obj.seek(0)
-                        st.download_button(
-                            label="📥 첨부된 PDF 문서 다운로드하여 열람",
-                            data=file_obj.read(),
-                            file_name=file_obj.name,
-                            mime="application/pdf",
-                            key=f"download_pdf_{t_id}"
-                        )
-                    else:
-                        st.info(f"📄 첨부된 증빙 파일: **{file_obj.name}**")
-                
-                with st.form(key=f"expense_form_{t_id}"):
-                    actual_spent = st.text_input("실제 사용 금액 (원)", value=str(t_row.get('spent_amount', '0')))
-                    spent_desc = st.text_area(
-                        "지출 세부 내역 (품목, 수량, 거래처, 계좌번호 등)", 
-                        value=str(t_row.get('expense_details', '')),
-                        placeholder="예: 영수증 번호 2026-08 / 우리카드 법인결제 / 세금계산서 발행 완료"
-                    )
-                    
-                    b_sub, b_fin = st.columns(2)
-                    with b_sub:
-                        if st.form_submit_button("📤 지출 내역 상신 (정산 요청)", type="primary", use_container_width=True):
-                            success, msg = submit_expense_report(t_id, actual_spent, spent_desc)
+                b_sub, b_fin = st.columns(2)
+                with b_sub:
+                    if st.form_submit_button("📤 지출 내역 상신 (정산 요청)", type="primary", use_container_width=True):
+                        success, msg = submit_expense_report(t_id, actual_spent, spent_desc)
+                        st.success(msg)
+                        st.rerun()
+                with b_fin:
+                    is_finance_manager = (user_role == "admin" or user_dept == "총무부")
+                    if is_finance_manager:
+                        if st.form_submit_button("👑 [총무부/관리자] 지출 정산 최종 승인 및 마감", use_container_width=True):
+                            success, msg = finalize_expense(t_id)
                             st.success(msg)
                             st.rerun()
-                    with b_fin:
-                        is_finance_manager = (user_role == "admin" or user_dept == "총무부")
-                        if is_finance_manager:
-                            if st.form_submit_button("👑 [총무부/관리자] 지출 정산 최종 승인 및 마감", use_container_width=True):
-                                success, msg = finalize_expense(t_id)
-                                st.success(msg)
-                                st.rerun()
-                        else:
-                            st.caption("🔒 정산 최종 승인 및 마감은 **총무부** 및 **관리자**만 가능합니다.")
+                    else:
+                        st.caption("🔒 정산 최종 승인 및 마감은 **총무부** 및 **관리자**만 가능합니다.")
         else:
             st.info("현재 최종 승인되어 정산 가능한 품의서가 없습니다.")
