@@ -3,6 +3,7 @@ from db_manager import get_user_credentials, add_user, delete_user, get_data
 from tab_attendance import render_attendance_tab
 from tab_reports import render_report_create_tab, render_my_reports_tab, render_consolidated_tab
 from tab_dashboard import render_work_dashboard_tab, render_attendance_analysis_tab
+from tab_approval import render_approval_tab  # 신규 추가
 
 st.set_page_config(page_title="로커스솔루션 업무 & 근태 관리", layout="wide")
 
@@ -70,13 +71,23 @@ with st.sidebar:
                     if success: st.warning(msg); st.rerun()
                     else: st.error(msg)
 
-# 메인 탭 렌더링
+user_name = st.session_state.user_info.get('name', '사용자')
+user_dept = st.session_state.user_info.get('department', '환경사업부')
+user_role = st.session_state.user_info.get('role', 'user')
+
+# 메인 탭 렌더링 (결재 탭 추가)
 st.title("📋 로커스솔루션 통합 업무 포털")
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "⏰ 출퇴근 & 연차/출장 등록", "✍️ 업무보고 작성", "🔍 내 보고서 관리",
-    "👨‍💼 부서장 통합 보고", "📊 업무 종합 대시보드", "📈 전사 근태 분석 현황"
+tab_app, tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📑 전자결재 & 지출품의",
+    "⏰ 출퇴근 & 연차/출장 등록", 
+    "✍️ 업무보고 작성", 
+    "🔍 내 보고서 관리",
+    "👨‍💼 부서장 통합 보고", 
+    "📊 업무 종합 대시보드", 
+    "📈 전사 근태 분석 현황"
 ])
 
+with tab_app: render_approval_tab(user_name, user_dept, user_role)
 with tab0: render_attendance_tab(user_name, user_dept)
 with tab1: render_report_create_tab(user_name, user_dept)
 with tab2: render_my_reports_tab(user_name)
