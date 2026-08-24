@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
-
+  
 # --------------------------------
 # 1. 구글 스프레드시트 연동 및 데이터 관리 함수
 # --------------------------------
