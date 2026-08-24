@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
@@ -19,6 +19,8 @@ def get_data(worksheet_name):
                 df = pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
             elif worksheet_name == "users":
                 df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
+            elif worksheet_name == "live_attendance":
+                df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
         return df
     except Exception as e:
         st.error(f"구글 시트 연결 오류 ({worksheet_name}): {e}")
@@ -40,6 +42,7 @@ def generate_new_id(df):
         return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 
+# --- 사용자 계정 관리 함수 ---
 def get_user_credentials():
     users_df = get_data("users")
     credentials = {
@@ -87,6 +90,66 @@ def delete_user(username):
     return False, "계정 정보를 찾을 수 없습니다."
 
 
+# --- 실시간 근태(출퇴근/휴가) 관리 함수 ---
+def record_attendance(name, department, att_type, note=""):
+    """출근, 퇴근, 연차, 반차 등을 기록합니다."""
+    df = get_data("live_attendance")
+    today_str = str(date.today())
+    now_time_str = datetime.now().strftime("%H:%M:%S")
+    
+    if df.empty or 'name' not in df.columns:
+        df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+        
+    df['date'] = df['date'].astype(str)
+    df['name'] = df['name'].astype(str)
+    
+    user_today = df[(df['date'] == today_str) & (df['name'] == str(name))]
+    
+    if att_type == "출근":
+        if not user_today.empty and user_today.iloc[0]['check_in'] != "-" and pd.notna(user_today.iloc[0]['check_in']):
+            return False, f"이미 오늘 출근 체크({user_today.iloc[0]['check_in']})가 완료되었습니다."
+        if not user_today.empty:
+            idx = user_today.index[0]
+            df.loc[idx, 'check_in'] = now_time_str
+            df.loc[idx, 'type'] = "근무"
+            if note: df.loc[idx, 'note'] = note
+        else:
+            new_id = generate_new_id(df)
+            new_row = pd.DataFrame([{
+                'id': new_id, 'date': today_str, 'name': name, 'department': department,
+                'type': '근무', 'check_in': now_time_str, 'check_out': '-', 'note': note
+            }])
+            df = pd.concat([df, new_row], ignore_index=True)
+        save_data("live_attendance", df)
+        return True, f"[{now_time_str}] 출근 체크 완료!"
+
+    elif att_type == "퇴근":
+        if user_today.empty or user_today.iloc[0]['check_in'] == "-" or pd.isna(user_today.iloc[0]['check_in']):
+            return False, "출근 기록이 먼저 확인되어야 퇴근을 기록할 수 있습니다."
+        idx = user_today.index[0]
+        df.loc[idx, 'check_out'] = now_time_str
+        if note:
+            df.loc[idx, 'note'] = (str(df.loc[idx, 'note']) + f" / 퇴근: {note}").strip(" /")
+        save_data("live_attendance", df)
+        return True, f"[{now_time_str}] 퇴근 체크 완료! 수고하셨습니다."
+
+    else: # 연차, 오전반차, 오후반차, 출장 등
+        if not user_today.empty:
+            idx = user_today.index[0]
+            df.loc[idx, 'type'] = att_type
+            df.loc[idx, 'note'] = note
+        else:
+            new_id = generate_new_id(df)
+            new_row = pd.DataFrame([{
+                'id': new_id, 'date': today_str, 'name': name, 'department': department,
+                'type': att_type, 'check_in': '-', 'check_out': '-', 'note': note
+            }])
+            df = pd.concat([df, new_row], ignore_index=True)
+        save_data("live_attendance", df)
+        return True, f"오늘 일정이 [{att_type}]로 등록되었습니다."
+
+
+# --- 보고서 데이터 관리 함수 ---
 def insert_report(report_date, department, name, today_result, tomorrow_plan, issue):
     df = get_data("reports")
     new_id = generate_new_id(df)
@@ -134,7 +197,6 @@ def delete_report(report_id):
 
 
 def time_to_minutes(t):
-    """HH:MM 형식 문자열을 분 단위 정수로 변환"""
     if pd.isna(t): return 0
     try:
         if isinstance(t, str) and ':' in t:
@@ -242,13 +304,101 @@ with st.sidebar:
 
 st.title("📋 로커스솔루션 통합 업무 포털")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab_att, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "⏰ 출퇴근 & 연차 등록",
     "✍️ 보고서 작성", 
     "🔍 내 보고서 관리", 
     "👨‍💼 부서장 통합 보고", 
     "📊 종합 대시보드",
-    "⏰ 근태 관리 대시보드"
+    "📈 월간 근태 분석"
 ])
+
+# --------------------------------
+# 탭 0: 실시간 출퇴근 및 연차/휴가 등록 (신규 기능)
+# --------------------------------
+with tab_att:
+    st.header(f"⏰ {user_name}님의 출퇴근 및 근태 관리")
+    today_str = str(date.today())
+    now_time_display = datetime.now().strftime("%H:%M")
+    st.caption(f"📅 오늘 날짜: **{today_str}** | 🕒 현재 시간: **{now_time_display}**")
+    
+    # 오늘 나의 근태 현황 불러오기
+    live_df = get_data("live_attendance")
+    my_status = None
+    if not live_df.empty and 'date' in live_df.columns and 'name' in live_df.columns:
+        live_df['date'] = live_df['date'].astype(str)
+        live_df['name'] = live_df['name'].astype(str)
+        row = live_df[(live_df['date'] == today_str) & (live_df['name'] == user_name)]
+        if not row.empty:
+            my_status = row.iloc[0]
+            
+    # 상단 요약 카드
+    st.markdown("#### 📌 오늘 나의 출퇴근 상태")
+    c_st1, c_st2, c_st3, c_st4 = st.columns(4)
+    c_st1.metric("근태 유형", my_status['type'] if my_status is not None else "미기록")
+    c_st2.metric("출근 시간", my_status['check_in'] if my_status is not None else "-")
+    c_st3.metric("퇴근 시간", my_status['check_out'] if my_status is not None else "-")
+    c_st4.metric("메모/비고", my_status['note'] if my_status is not None and pd.notna(my_status['note']) else "-")
+    
+    st.markdown("---")
+    
+    col_inout, col_leave = st.columns(2)
+    
+    # 1. 원클릭 출퇴근 체크
+    with col_inout:
+        st.subheader("🏢 출퇴근 체크")
+        att_note = st.text_input("출퇴근 비고 (선택사항, 예: 외근 후 바로 출근)", key="att_note_input")
+        
+        btn_c1, btn_c2 = st.columns(2)
+        with btn_c1:
+            if st.button("🟢 출근하기", use_container_width=True, type="primary"):
+                dept = st.session_state.user_info.get("department", "환경사업부")
+                success, msg = record_attendance(user_name, dept, "출근", att_note)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.warning(msg)
+        with btn_c2:
+            if st.button("🔴 퇴근하기", use_container_width=True):
+                dept = st.session_state.user_info.get("department", "환경사업부")
+                success, msg = record_attendance(user_name, dept, "퇴근", att_note)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.warning(msg)
+
+    # 2. 연차 / 반차 / 출장 신청
+    with col_leave:
+        st.subheader("🌴 연차 / 반차 / 휴가 / 출장 등록")
+        with st.form("leave_form"):
+            leave_type = st.selectbox("근태 유형 선택", ["연차", "오전반차", "오후반차", "대체휴무", "경조휴가", "출장", "재택근무"])
+            leave_reason = st.text_input("사유 및 목적지 (예: 제주출장, 개인연차)", placeholder="사유를 입력해 주세요")
+            
+            if st.form_submit_button("근태 등록하기", use_container_width=True, type="primary"):
+                dept = st.session_state.user_info.get("department", "환경사업부")
+                success, msg = record_attendance(user_name, dept, leave_type, leave_reason)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+                    
+    st.markdown("---")
+    st.subheader("📋 오늘의 전 직원 근태 현황")
+    if not live_df.empty:
+        today_all = live_df[live_df['date'] == today_str].copy()
+        if not today_all.empty:
+            display_live = today_all.rename(columns={
+                'name': '이름', 'department': '부서', 'type': '구분', 
+                'check_in': '출근시간', 'check_out': '퇴근시간', 'note': '비고'
+            })[['부서', '이름', '구분', '출근시간', '퇴근시간', '비고']]
+            st.dataframe(display_live, use_container_width=True, hide_index=True)
+        else:
+            st.info("오늘 아직 등록된 출퇴근/휴가 기록이 없습니다.")
+    else:
+        st.info("근태 기록 데이터가 없습니다.")
 
 # --------------------------------
 # 탭 1: 보고서 작성
@@ -265,8 +415,7 @@ with tab1:
             dept_index = dept_list.index(default_dept) if default_dept in dept_list else 0
             department = st.selectbox("소속 부서", dept_list, index=dept_index, key="t1_dept")
         with col3:
-            default_name = st.session_state.user_info.get("name", "")
-            name = st.text_input("이름", value=default_name if default_name != "기본관리자" else "", key="t1_name")
+            name = st.text_input("이름", value=user_name if user_name != "기본관리자" else "", key="t1_name")
 
         st.markdown("---")
         today_result = st.text_area("1. 금일 업무 실적", placeholder="[프로젝트명] 세부 진행 내용 (진척도%)", height=150)
@@ -289,7 +438,7 @@ with tab2:
     with col1:
         search_dept = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="search_dept")
     with col2:
-        search_name = st.text_input("본인 이름 입력", value=st.session_state.user_info.get("name", ""), key="search_name")
+        search_name = st.text_input("본인 이름 입력", value=user_name, key="search_name")
 
     if search_name.strip():
         df = get_data("reports")
@@ -479,10 +628,10 @@ with tab4:
             st.info("해당 조건으로 제출된 개별 보고서가 없습니다.")
 
 # --------------------------------
-# 탭 5: 근태 관리 대시보드 (신규 기능)
+# 탭 5: 월간 근태 분석 (엑셀 업로드 분석)
 # --------------------------------
 with tab5:
-    st.header("⏰ 임직원 월간 근태 분석 & 관리")
+    st.header("📈 임직원 월간 근태 분석 & 관리")
     st.caption("로커스솔루션 근태기록 엑셀 파일(.xlsx)을 업로드하면 자동으로 통계 및 이상 근태를 분석합니다.")
     
     uploaded_file = st.file_uploader("월간 근태기록 엑셀 파일 업로드", type=["xlsx", "xls"], key="attendance_uploader")
@@ -490,8 +639,6 @@ with tab5:
     if uploaded_file is not None:
         try:
             att_df = pd.read_excel(uploaded_file, sheet_name=0)
-            
-            # 필수 컬럼 존재 여부 체크
             req_cols = ['근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
             if all(col in att_df.columns for col in req_cols):
                 
@@ -501,7 +648,6 @@ with tab5:
                 att_df['결근여부'] = att_df['출근판정'] == '결근'
                 att_df['조퇴여부'] = att_df['퇴근판정'] == '조퇴'
                 
-                # 전체 요약 집계
                 total_emps = att_df['이름'].nunique()
                 total_work_hours = att_df['총근무_분'].sum() / 60
                 total_over_hours = att_df['연장근무_분'].sum() / 60
@@ -518,7 +664,6 @@ with tab5:
                 
                 st.markdown("---")
                 
-                # 직원별 요약 테이블 생성
                 emp_summary = att_df.groupby('이름').agg(
                     근무일수=('근무일자', 'count'),
                     정상출근일수=('출근판정', lambda x: (x == '정상출근').sum()),
@@ -536,14 +681,9 @@ with tab5:
                 with sub_tab1:
                     st.subheader("직원별 근태 통계 순위")
                     display_summary = emp_summary.rename(columns={
-                        '이름': '직원명',
-                        '근무일수': '기록일수',
-                        '정상출근일수': '정상 출근',
-                        '지각횟수': '지각(회)',
-                        '조퇴횟수': '조퇴(회)',
-                        '출장휴가등_결근': '출장/휴가(결근)',
-                        '총근무시간': '총 근무(시간)',
-                        '총연장근무': '연장근무(시간)'
+                        '이름': '직원명', '근무일수': '기록일수', '정상출근일수': '정상 출근',
+                        '지각횟수': '지각(회)', '조퇴횟수': '조퇴(회)', '출장휴가등_결근': '출장/휴가(결근)',
+                        '총근무시간': '총 근무(시간)', '총연장근무': '연장근무(시간)'
                     })
                     st.dataframe(display_summary, use_container_width=True, hide_index=True)
                     
@@ -566,10 +706,8 @@ with tab5:
                     if selected_emp:
                         user_att = att_df[att_df['이름'] == selected_emp].copy()
                         user_att['근무일자'] = user_att['근무일자'].astype(str)
-                        
                         show_cols = ['근무일자', '출근시간', '퇴근시간', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
                         present_cols = [c for c in show_cols if c in user_att.columns]
-                        
                         st.dataframe(user_att[present_cols], use_container_width=True, hide_index=True)
             else:
                 st.error("엑셀 파일 양식이 맞지 않습니다. ('근무일자', '이름', '출근판정', '총근무시간' 컬럼이 포함되어야 합니다.)")
