@@ -1,339 +1,231 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime, timedelta, timezone
-from streamlit_gsheets import GSheetsConnection
+from db_manager import (
+    get_data, get_user_credentials, insert_approval_doc,
+    approve_step1, approve_step2, approve_final,
+    submit_expense_report, finalize_expense
+)
 
-# 한국 표준시 (KST) 설정
-KST = timezone(timedelta(hours=9))
+def render_approval_tab(user_name, user_dept, user_role):
+    # 세션 상태 안전 초기화
+    if "expense_receipts" not in st.session_state:
+        st.session_state.expense_receipts = {}
 
-def get_kst_now():
-    return datetime.now(KST)
-
-def get_kst_date():
-    return get_kst_now().date()
-
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_sheet_data(worksheet_name):
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    try:
-        df = conn.read(worksheet=worksheet_name, ttl=60)
-        df = df.dropna(how="all")
-        if df.empty:
-            if worksheet_name == "reports":
-                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue', 'status', 'comment'])
-            elif worksheet_name == "consolidated_reports":
-                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
-            elif worksheet_name == "users":
-                df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
-            elif worksheet_name == "live_attendance":
-                df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
-        else:
-            df = df.fillna("")
-            for col in df.columns:
-                df[col] = df[col].astype(str)
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-def get_data(worksheet_name):
-    df = fetch_sheet_data(worksheet_name)
-    if df.empty:
-        if worksheet_name == "reports":
-            return pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue', 'status', 'comment'])
-        elif worksheet_name == "consolidated_reports":
-            return pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
-        elif worksheet_name == "users":
-            return pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
-        elif worksheet_name == "live_attendance":
-            return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
-    return df.copy()
-
-def save_data(worksheet_name, df):
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df = df.fillna("")
-    conn.update(worksheet=worksheet_name, data=df)
-    st.cache_data.clear()
-
-def generate_new_id(df):
-    if df.empty or 'id' not in df.columns:
-        return "1"
-    max_id = pd.to_numeric(df['id'], errors='coerce').max()
-    return str(int(max_id) + 1 if pd.notna(max_id) else 1)
-
-# 사용자 계정 관리
-def get_user_credentials():
-    users_df = get_data("users")
-    credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin", "department": "총무부"}}
-    if not users_df.empty and 'username' in users_df.columns:
-        for _, row in users_df.iterrows():
-            if pd.isna(row.get('username')): continue
-            u_id = str(row['username']).strip()
-            if u_id:
-                credentials[u_id] = {
-                    "password": str(row.get('password', '')).strip(),
-                    "name": str(row.get('name', u_id)).strip(),
-                    "role": str(row.get('role', 'user')).strip(),
-                    "department": str(row.get('department', '환경사업부')).strip()
-                }
-    return credentials
-
-def add_user(username, password, name, role="user", department="환경사업부"):
-    users_df = get_data("users")
-    if not users_df.empty and 'username' in users_df.columns:
-        if username in users_df['username'].astype(str).values:
-            return False, "이미 존재하는 아이디입니다."
-    new_user = pd.DataFrame([{'username': str(username), 'password': str(password), 'name': str(name), 'role': str(role), 'department': str(department)}])
-    save_data("users", pd.concat([users_df, new_user], ignore_index=True))
-    return True, f"'{name}' 사용자가 성공적으로 등록되었습니다."
-
-def delete_user(username):
-    users_df = get_data("users")
-    if not users_df.empty and 'username' in users_df.columns:
-        if username == "admin":
-            return False, "기본 관리자(admin) 계정은 삭제할 수 없습니다."
-        save_data("users", users_df[users_df['username'].astype(str) != str(username)])
-        return True, f"'{username}' 계정이 삭제되었습니다."
-    return False, "계정 정보를 찾을 수 없습니다."
-
-# 근태 관련 함수
-def record_attendance(name, department, att_type, note=""):
-    df = get_data("live_attendance")
-    today_str = str(get_kst_date())
-    now_time_str = get_kst_now().strftime("%H:%M:%S")
-    df['date'] = df['date'].astype(str)
-    df['name'] = df['name'].astype(str)
-    user_today = df[(df['date'] == today_str) & (df['name'] == str(name))]
+    st.header("📑 전자결재 & 품의 / 지출 정산 관리")
     
-    if att_type == "출근":
-        if not user_today.empty and user_today.iloc[0]['check_in'] != "-" and str(user_today.iloc[0]['check_in']).strip() != "":
-            return False, f"이미 오늘 출근 체크({user_today.iloc[0]['check_in']})가 완료되었습니다."
-        if not user_today.empty:
-            idx = user_today.index[0]
-            df.loc[idx, 'check_in'] = now_time_str
-            df.loc[idx, 'type'] = "근무"
-            if note: df.loc[idx, 'note'] = str(note)
-        else:
-            new_row = pd.DataFrame([{'id': str(generate_new_id(df)), 'date': today_str, 'name': str(name), 'department': str(department), 'type': '근무', 'check_in': now_time_str, 'check_out': '-', 'note': str(note)}])
-            df = pd.concat([df, new_row], ignore_index=True)
-        save_data("live_attendance", df)
-        return True, f"[{now_time_str}] 출근 체크 완료!"
+    sub1, sub2, sub3 = st.tabs([
+        "✍️ 신규 품의서 기안", 
+        "📬 결재함 & 내 기안 문서 조회", 
+        "💰 실행 후 지출 정산 등록/마감"
+    ])
+    
+    users_dict = get_user_credentials()
+    all_emp_names = [info['name'] for info in users_dict.values() if info['name'] != user_name]
+    if not all_emp_names: 
+        all_emp_names = ["기본관리자"]
 
-    elif att_type == "퇴근":
-        if user_today.empty or user_today.iloc[0]['check_in'] == "-" or str(user_today.iloc[0]['check_in']).strip() == "":
-            return False, "출근 기록이 먼저 확인되어야 퇴근을 기록할 수 있습니다."
-        idx = user_today.index[0]
-        df.loc[idx, 'check_out'] = now_time_str
-        if note:
-            df.loc[idx, 'note'] = (str(df.loc[idx, 'note']) + f" / 퇴근: {note}").strip(" /")
-        save_data("live_attendance", df)
-        return True, f"[{now_time_str}] 퇴근 체크 완료! 수고하셨습니다."
+    # --------------------------------
+    # 서브탭 1: 신규 품의서 기안
+    # --------------------------------
+    with sub1:
+        st.subheader("새로운 품의서 작성")
+        with st.form("new_approval_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                doc_type = st.selectbox("품의 구분", ["구매/지출 품의", "프로젝트 실행 품의", "출장/외근 품의", "일반 업무 품의"])
+                title = st.text_input("품의 제목", placeholder="예: [환경사업부] 측정 장비 구매 건")
+                budget = st.text_input("예상 소요 예산(원)", value="0", placeholder="숫자만 입력 (예: 1500000)")
+            with col2:
+                target_mgr1 = st.selectbox("🎯 1차 결재자 (중간관리자 / 필수)", all_emp_names)
+                target_mgr2 = st.selectbox("🎯 2차 결재자 (선택 사항)", ["선택 안 함"] + [name for name in all_emp_names if name != target_mgr1])
+                cc_selected = st.multiselect("👥 참고자 (열람 공유)", [name for name in all_emp_names if name not in [target_mgr1, target_mgr2]])
+                
+            st.caption(f"기안자: **{user_name}** ({user_dept}) | 1차: **{target_mgr1}** | 2차: **{target_mgr2}** | 참고: **{', '.join(cc_selected) if cc_selected else '없음'}**")
+            content = st.text_area(
+                "품의 내용 및 목적 (실행 계획)", 
+                placeholder="1. 추진 목적:\n2. 세부 품목 및 단가:\n3. 기대 효과:\n4. 실행 예정일:", 
+                height=180
+            )
+            
+            if st.form_submit_button("품의서 결재 상신", type="primary", use_container_width=True):
+                if not title.strip() or not content.strip():
+                    st.error("품의 제목과 내용을 모두 입력해 주세요.")
+                else:
+                    mgr2_val = "" if target_mgr2 == "선택 안 함" else target_mgr2
+                    success, msg = insert_approval_doc(doc_type, title, user_name, user_dept, budget, target_mgr1, mgr2_val, cc_selected, content)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-def manual_update_attendance(name, department, target_date, att_type, check_in_val, check_out_val, note_val):
-    df = get_data("live_attendance")
-    df['date'] = df['date'].astype(str)
-    df['name'] = df['name'].astype(str)
-    d_str = str(target_date)
-    existing = df[(df['date'] == d_str) & (df['name'] == str(name))]
-    if not existing.empty:
-        idx = existing.index[0]
-        df.loc[idx, 'type'] = str(att_type)
-        df.loc[idx, 'check_in'] = str(check_in_val) if str(check_in_val).strip() else "-"
-        df.loc[idx, 'check_out'] = str(check_out_val) if str(check_out_val).strip() else "-"
-        df.loc[idx, 'note'] = str(note_val)
-    else:
-        new_row = pd.DataFrame([{'id': str(generate_new_id(df)), 'date': d_str, 'name': str(name), 'department': str(department), 'type': str(att_type), 'check_in': str(check_in_val) if str(check_in_val).strip() else "-", 'check_out': str(check_out_val) if str(check_out_val).strip() else "-", 'note': str(note_val)}])
-        df = pd.concat([df, new_row], ignore_index=True)
-    save_data("live_attendance", df)
-    return True, f"{d_str} 근태 기록이 성공적으로 수정/등록되었습니다."
-
-def record_leave_range(name, department, leave_type, start_d, end_d, note=""):
-    df = get_data("live_attendance")
-    df['date'] = df['date'].astype(str)
-    df['name'] = df['name'].astype(str)
-    curr = start_d
-    added_count = 0
-    while curr <= end_d:
-        d_str = str(curr)
-        existing = df[(df['date'] == d_str) & (df['name'] == str(name))]
-        if not existing.empty:
-            idx = existing.index[0]
-            df.loc[idx, 'type'] = str(leave_type)
-            df.loc[idx, 'note'] = str(note)
-            df.loc[idx, 'check_in'] = '-'
-            df.loc[idx, 'check_out'] = '-'
-        else:
-            new_row = pd.DataFrame([{'id': str(generate_new_id(df)), 'date': d_str, 'name': str(name), 'department': str(department), 'type': str(leave_type), 'check_in': '-', 'check_out': '-', 'note': str(note)}])
-            df = pd.concat([df, new_row], ignore_index=True)
-        added_count += 1
-        curr += timedelta(days=1)
-    save_data("live_attendance", df)
-    return True, f"{start_d} ~ {end_d} 기간({added_count}일간) 동안 [{leave_type}] 일정이 등록되었습니다."
-
-def delete_attendance(att_id):
-    df = get_data("live_attendance")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        save_data("live_attendance", df[df['id'] != str(att_id)])
-        return True, "신청 내역이 정상적으로 취소되었습니다."
-    return False, "기록을 찾을 수 없습니다."
-
-# 보고서 CRUD 함수
-def insert_report(report_date, department, name, today_result, tomorrow_plan, issue):
-    df = get_data("reports")
-    new_row = pd.DataFrame([{'id': str(generate_new_id(df)), 'report_date': str(report_date), 'department': str(department), 'name': str(name), 'today_result': str(today_result), 'tomorrow_plan': str(tomorrow_plan), 'issue': str(issue), 'status': '제출완료', 'comment': ''}])
-    save_data("reports", pd.concat([df, new_row], ignore_index=True))
-
-def save_consolidated_report(report_date, department, manager_name, today_result, tomorrow_plan, issue):
-    df = get_data("consolidated_reports")
-    if not df.empty and 'report_date' in df.columns and 'department' in df.columns:
-        df['report_date'] = df['report_date'].astype(str)
-        df = df[~((df['report_date'] == str(report_date)) & (df['department'] == department))]
-    new_row = pd.DataFrame([{'id': str(generate_new_id(df)), 'report_date': str(report_date), 'department': str(department), 'manager_name': str(manager_name), 'today_result': str(today_result), 'tomorrow_plan': str(tomorrow_plan), 'issue': str(issue)}])
-    save_data("consolidated_reports", pd.concat([df, new_row], ignore_index=True))
-
-def update_report_full(report_id, today_result, tomorrow_plan, issue, status, comment):
-    df = get_data("reports")
-    if not df.empty and 'id' in df.columns:
-        for col in ['status', 'comment', 'today_result', 'tomorrow_plan', 'issue']:
-            if col not in df.columns: df[col] = ""
-            df[col] = df[col].astype(object)
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(report_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'today_result'] = str(today_result)
-            df.at[t_idx, 'tomorrow_plan'] = str(tomorrow_plan)
-            df.at[t_idx, 'issue'] = str(issue)
-            df.at[t_idx, 'status'] = str(status)
-            df.at[t_idx, 'comment'] = str(comment)
-            save_data("reports", df)
-
-def update_report(report_id, today_result, tomorrow_plan, issue):
-    df = get_data("reports")
-    if not df.empty and 'id' in df.columns:
-        for col in ['today_result', 'tomorrow_plan', 'issue']:
-            if col not in df.columns: df[col] = ""
-            df[col] = df[col].astype(object)
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(report_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'today_result'] = str(today_result)
-            df.at[t_idx, 'tomorrow_plan'] = str(tomorrow_plan)
-            df.at[t_idx, 'issue'] = str(issue)
-            save_data("reports", df)
-
-def delete_report(report_id):
-    df = get_data("reports")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        save_data("reports", df[df['id'] != str(report_id)])
-
-def time_to_minutes(t):
-    if pd.isna(t): return 0
-    try:
-        if isinstance(t, str) and ':' in t:
-            parts = t.split(':')
-            if len(parts) >= 2: return int(parts[0]) * 60 + int(parts[1])
-        return 0
-    except:
-        return 0
+    # --------------------------------
+    # 서브탭 2: 결재함 & 내 기안 문서 조회
+    # --------------------------------
+    with sub2:
+        st.subheader("전자결재 승인 대기 목록 및 문서함")
+        app_df = get_data("approvals")
         
-# --- 전자결재 (2단계 결재 + 참고자 + 지출정산) ---
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, cc_users, content):
-    df = get_data("approvals")
-    new_id = generate_new_id(df)
-    now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
-    
-    # 2차 결재자가 없으면 다음 단계는 '최종결재대기', 있으면 '1차결재대기'
-    new_row = pd.DataFrame([{
-        'id': str(new_id), 'created_at': now_str, 'doc_type': str(doc_type),
-        'title': str(title), 'drafter_name': str(drafter_name), 'department': str(department),
-        'budget': str(budget), 'content': str(content), 'status': '1차결재대기',
-        'target_manager1': str(target_mgr1),
-        'target_manager2': str(target_mgr2) if target_mgr2 else "없음",
-        'cc_users': str(", ".join(cc_users)) if cc_users else "없음",
-        'manager1_name': '', 'manager1_comment': '',
-        'manager2_name': '', 'manager2_comment': '',
-        'final_approver': '', 'final_comment': '',
-        'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
-    }])
-    save_data("approvals", pd.concat([df, new_row], ignore_index=True))
-    return True, f"[{title}] 품의서가 상신되었습니다."
+        if not app_df.empty:
+            for c in ['target_manager1', 'target_manager2', 'cc_users']:
+                if c not in app_df.columns: 
+                    app_df[c] = ''
+                
+            display_app = app_df.rename(columns={
+                'created_at': '기안일시', 'doc_type': '구분', 'title': '제목',
+                'drafter_name': '기안자', 'department': '부서', 'budget': '예산(원)',
+                'status': '결재상태', 'target_manager1': '1차결재자', 'target_manager2': '2차결재자', 'cc_users': '참고자'
+            })
+            show_cols = ['기안일시', '구분', '제목', '기안자', '부서', '예산(원)', '결재상태', '1차결재자', '2차결재자', '참고자']
+            valid_cols = [c for c in show_cols if c in display_app.columns]
+            
+            st.caption("💡 결재하거나 상세 내용을 검토할 문서를 표에서 클릭하세요.")
+            selection = st.dataframe(
+                display_app[valid_cols].reset_index(drop=True),
+                use_container_width=True, hide_index=True,
+                on_select="rerun", selection_mode="single-row"
+            )
+            
+            selected_rows = selection.selection.rows
+            if selected_rows:
+                doc = app_df.iloc[selected_rows[0]]
+                doc_id = str(doc['id'])
+                target_m1 = str(doc.get('target_manager1', ''))
+                target_m2 = str(doc.get('target_manager2', ''))
+                cc_list = str(doc.get('cc_users', ''))
+                curr_status = str(doc.get('status', ''))
+                
+                st.markdown("---")
+                st.subheader(f"📄 [{doc.get('doc_type')}] {doc.get('title')}")
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.write(f"**기안자**: {doc.get('drafter_name')} ({doc.get('department')})")
+                c2.write(f"**기안일시**: {doc.get('created_at')}")
+                c3.write(f"**소요예산**: {doc.get('budget')} 원")
+                c4.write(f"**결재선**: 1차({target_m1}) ➔ 2차({target_m2}) ➔ 최종(대표)")
+                st.caption(f"👥 **참고자(CC)**: {cc_list}")
+                
+                st.text_area("품의 상세 내용", value=doc.get('content', ''), height=150, disabled=True)
+                
+                if doc.get('manager1_comment'):
+                    st.info(f"🗣️ **1차 승인자({doc.get('manager1_name')}) 코멘트**: {doc.get('manager1_comment')}")
+                if doc.get('manager2_comment'):
+                    st.info(f"🗣️ **2차 승인자({doc.get('manager2_name')}) 코멘트**: {doc.get('manager2_comment')}")
+                if doc.get('final_comment'):
+                    st.success(f"👑 **최종 승인자({doc.get('final_approver')}) 코멘트**: {doc.get('final_comment')}")
+                
+                st.markdown("#### ✍️ 결재 처리")
+                comment_input = st.text_input("결재 코멘트 / 심사의견", key=f"app_comment_{doc_id}")
+                
+                # 1차 결재
+                if curr_status == '1차결재대기':
+                    if user_name == target_m1 or user_role == "admin":
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("🔵 1차 승인", type="primary", use_container_width=True):
+                                success, msg = approve_step1(doc_id, user_name, comment_input, is_reject=False)
+                                st.success(msg); st.rerun()
+                        with b2:
+                            if st.button("❌ 1차 반려", use_container_width=True):
+                                success, msg = approve_step1(doc_id, user_name, comment_input, is_reject=True)
+                                st.warning(msg); st.rerun()
+                    else:
+                        st.warning(f"🔒 1차 결재자(**{target_m1}**)만 결재할 수 있습니다.")
+                        
+                # 2차 결재
+                elif curr_status == '2차결재대기':
+                    if user_name == target_m2 or user_role == "admin":
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("🔵 2차 승인 (최종결재로 상신)", type="primary", use_container_width=True):
+                                success, msg = approve_step2(doc_id, user_name, comment_input, is_reject=False)
+                                st.success(msg); st.rerun()
+                        with b2:
+                            if st.button("❌ 2차 반려", use_container_width=True):
+                                success, msg = approve_step2(doc_id, user_name, comment_input, is_reject=True)
+                                st.warning(msg); st.rerun()
+                    else:
+                        st.warning(f"🔒 2차 결재자(**{target_m2}**)만 결재할 수 있습니다.")
+                        
+                # 최종 결재 (Admin/대표)
+                elif curr_status == '최종결재대기':
+                    if user_role == "admin":
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("👑 최종 승인 완료 (집행 허가)", type="primary", use_container_width=True):
+                                success, msg = approve_final(doc_id, user_name, comment_input, is_reject=False)
+                                st.success(msg); st.rerun()
+                        with b2:
+                            if st.button("❌ 최종 반려", use_container_width=True):
+                                success, msg = approve_final(doc_id, user_name, comment_input, is_reject=True)
+                                st.warning(msg); st.rerun()
+                    else:
+                        st.info("🔒 중간 결재가 완료되었습니다. 최종 승인은 대표님(관리자) 권한입니다.")
+                else:
+                    st.write(f"현재 문서는 `{curr_status}` 상태로 결재 처리가 완료되었습니다.")
+        else:
+            st.info("상신된 결재 문서가 없습니다.")
 
-def approve_step1(doc_id, manager_name, comment, is_reject=False):
-    """1차 결재 승인/반려"""
-    df = get_data("approvals")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(doc_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'manager1_name'] = str(manager_name)
-            df.at[t_idx, 'manager1_comment'] = str(comment)
-            if is_reject:
-                df.at[t_idx, 'status'] = '1차반려'
-            else:
-                # 2차 결재자가 있으면 2차결재대기, 없으면 최종결재대기
-                has_mgr2 = str(df.at[t_idx, 'target_manager2']).strip() not in ["", "없음", "선택 안 함"]
-                df.at[t_idx, 'status'] = '2차결재대기' if has_mgr2 else '최종결재대기'
-            save_data("approvals", df)
-            return True, "1차 반려 처리되었습니다." if is_reject else "1차 승인이 완료되었습니다."
-    return False, "문서를 찾을 수 없습니다."
-
-def approve_step2(doc_id, manager_name, comment, is_reject=False):
-    """2차 중간 결재 승인/반려"""
-    df = get_data("approvals")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(doc_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'manager2_name'] = str(manager_name)
-            df.at[t_idx, 'manager2_comment'] = str(comment)
-            df.at[t_idx, 'status'] = '2차반려' if is_reject else '최종결재대기'
-            save_data("approvals", df)
-            return True, "2차 반려 처리되었습니다." if is_reject else "2차 승인 완료! 최종 결재로 상신되었습니다."
-    return False, "문서를 찾을 수 없습니다."
-
-def approve_final(doc_id, final_approver, comment, is_reject=False):
-    """최종 결재자(대표) 승인/반려"""
-    df = get_data("approvals")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(doc_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'final_approver'] = str(final_approver)
-            df.at[t_idx, 'final_comment'] = str(comment)
-            df.at[t_idx, 'status'] = '최종반려' if is_reject else '승인완료(집행가능)'
-            if not is_reject:
-                df.at[t_idx, 'expense_status'] = '정산대기'
-            save_data("approvals", df)
-            return True, "최종 반려되었습니다." if is_reject else "최종 결재 완료! 집행 및 지출 정산이 가능합니다."
-    return False, "문서를 찾을 수 없습니다."
-
-def submit_expense_report(doc_id, spent_amount, expense_details):
-    df = get_data("approvals")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(doc_id)].index
-        if len(idx) > 0:
-            t_idx = idx[0]
-            df.at[t_idx, 'spent_amount'] = str(spent_amount)
-            df.at[t_idx, 'expense_details'] = str(expense_details)
-            df.at[t_idx, 'expense_status'] = '정산검토중'
-            save_data("approvals", df)
-            return True, "지출 정산 내역이 상신되었습니다."
-    return False, "문서를 찾을 수 없습니다."
-
-def finalize_expense(doc_id):
-    df = get_data("approvals")
-    if not df.empty and 'id' in df.columns:
-        df['id'] = df['id'].astype(str)
-        idx = df[df['id'] == str(doc_id)].index
-        if len(idx) > 0:
-            df.at[idx[0], 'expense_status'] = '정산완료'
-            save_data("approvals", df)
-            return True, "지출 정산이 최종 마감/승인되었습니다."
-    return False, "문서를 찾을 수 없습니다."
+    # --------------------------------
+    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감
+    # --------------------------------
+    with sub3:
+        st.subheader("💳 품의 실행 완료 건 지출 정산 & 증빙 관리")
+        app_df = get_data("approvals")
+        approved_docs = app_df[app_df['status'] == '승인완료(집행가능)'].copy() if not app_df.empty else pd.DataFrame()
+        
+        if not approved_docs.empty:
+            st.write("**[정산 대상 품의서 목록]**")
+            st.dataframe(
+                approved_docs[['created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
+                    columns={'created_at': '기안일', 'title': '품의명', 'drafter_name': '기안자', 'department': '부서', 'budget': '승인예산', 'spent_amount': '실집행액', 'expense_status': '정산상태'}
+                ),
+                use_container_width=True, hide_index=True
+            )
+            
+            st.markdown("---")
+            st.subheader("📝 실 지출내역 및 영수증 증빙 등록")
+            
+            doc_options = {f"[{r['id']}] {r['title']} (승인예산: {r['budget']}원)": r['id'] for _, r in approved_docs.iterrows()}
+            sel_target = st.selectbox("지출 등록/검토할 품의서를 선택하세요", list(doc_options.keys()))
+            
+            if sel_target:
+                t_id = doc_options[sel_target]
+                t_row = approved_docs[approved_docs['id'] == t_id].iloc[0]
+                
+                uploaded_receipt = st.file_uploader(
+                    "📎 영수증 / 카드전표 / 세금계산서 증빙 파일 업로드", 
+                    type=["png", "jpg", "jpeg", "pdf"], 
+                    key=f"receipt_upload_{t_id}"
+                )
+                if uploaded_receipt is not None:
+                    st.session_state.expense_receipts[t_id] = uploaded_receipt
+                    
+                # 안전한 get 접근으로 AttributeError 방지
+                receipt_dict = getattr(st.session_state, "expense_receipts", {})
+                if t_id in receipt_dict:
+                    st.image(receipt_dict[t_id], caption="📄 첨부된 영수증 증빙 서류", width=400)
+                
+                with st.form(key=f"expense_form_{t_id}"):
+                    actual_spent = st.text_input("실제 사용 금액 (원)", value=str(t_row.get('spent_amount', '0')))
+                    spent_desc = st.text_area(
+                        "지출 세부 내역 (품목, 수량, 거래처, 계좌번호 등)", 
+                        value=str(t_row.get('expense_details', '')),
+                        placeholder="예: 영수증 번호 2026-08 / 우리카드 법인결제 / 세금계산서 발행 완료"
+                    )
+                    
+                    b_sub, b_fin = st.columns(2)
+                    with b_sub:
+                        if st.form_submit_button("📤 지출 내역 상신 (정산 요청)", type="primary", use_container_width=True):
+                            success, msg = submit_expense_report(t_id, actual_spent, spent_desc)
+                            st.success(msg); st.rerun()
+                    with b_fin:
+                        is_finance_manager = (user_role == "admin" or user_dept == "총무부")
+                        if is_finance_manager:
+                            if st.form_submit_button("👑 [총무부/관리자] 지출 정산 최종 승인 및 마감", use_container_width=True):
+                                success, msg = finalize_expense(t_id)
+                                st.success(msg); st.rerun()
+                        else:
+                            st.caption("🔒 정산 최종 승인 및 마감은 **총무부** 및 **관리자**만 가능합니다.")
+        else:
+            st.info("현재 최종 승인되어 정산 가능한 품의서가 없습니다.")
