@@ -1,10 +1,23 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from streamlit_gsheets import GSheetsConnection
 
 # --------------------------------
-# 1. 구글 스프레드시트 연동 및 데이터 관리 함수 (캐싱 적용으로 429 에러 방지)
+# 한국 표준시(KST, UTC+9) 헬퍼 함수
+# --------------------------------
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now():
+    """현재 한국 표준시 datetime 반환"""
+    return datetime.now(KST)
+
+def get_kst_date():
+    """현재 한국 표준시 date 반환"""
+    return get_kst_now().date()
+
+# --------------------------------
+# 1. 구글 스프레드시트 연동 및 데이터 관리 함수
 # --------------------------------
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_sheet_data(worksheet_name):
@@ -28,7 +41,6 @@ def fetch_sheet_data(worksheet_name):
                 df[col] = df[col].astype(str)
         return df
     except Exception as e:
-        # API 쿼터 초과(429) 발생 시 빈 DataFrame 반환
         return pd.DataFrame()
 
 def get_data(worksheet_name):
@@ -104,11 +116,11 @@ def delete_user(username):
         return True, f"'{username}' 계정이 삭제되었습니다."
     return False, "계정 정보를 찾을 수 없습니다."
 
-# --- 실시간 출퇴근 및 기간별 휴가/출장 등록 함수 ---
+# --- 실시간 출퇴근 및 근태 수정 함수 ---
 def record_attendance(name, department, att_type, note=""):
     df = get_data("live_attendance")
-    today_str = str(date.today())
-    now_time_str = datetime.now().strftime("%H:%M:%S")
+    today_str = str(get_kst_date())
+    now_time_str = get_kst_now().strftime("%H:%M:%S")
     
     if df.empty or 'name' not in df.columns:
         df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
@@ -145,6 +157,35 @@ def record_attendance(name, department, att_type, note=""):
             df.loc[idx, 'note'] = (str(df.loc[idx, 'note']) + f" / 퇴근: {note}").strip(" /")
         save_data("live_attendance", df)
         return True, f"[{now_time_str}] 퇴근 체크 완료! 수고하셨습니다."
+
+def manual_update_attendance(name, department, target_date, att_type, check_in_val, check_out_val, note_val):
+    """직원이 날짜와 출퇴근 시간을 직접 지정하여 수정/등록"""
+    df = get_data("live_attendance")
+    if df.empty or 'name' not in df.columns:
+        df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+        
+    df['date'] = df['date'].astype(str)
+    df['name'] = df['name'].astype(str)
+    d_str = str(target_date)
+    
+    existing = df[(df['date'] == d_str) & (df['name'] == str(name))]
+    if not existing.empty:
+        idx = existing.index[0]
+        df.loc[idx, 'type'] = str(att_type)
+        df.loc[idx, 'check_in'] = str(check_in_val) if str(check_in_val).strip() else "-"
+        df.loc[idx, 'check_out'] = str(check_out_val) if str(check_out_val).strip() else "-"
+        df.loc[idx, 'note'] = str(note_val)
+    else:
+        new_id = generate_new_id(df)
+        new_row = pd.DataFrame([{
+            'id': str(new_id), 'date': d_str, 'name': str(name), 'department': str(department),
+            'type': str(att_type), 'check_in': str(check_in_val) if str(check_in_val).strip() else "-",
+            'check_out': str(check_out_val) if str(check_out_val).strip() else "-", 'note': str(note_val)
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
+        
+    save_data("live_attendance", df)
+    return True, f"{d_str} 근태 기록이 성공적으로 수정/등록되었습니다."
 
 def record_leave_range(name, department, leave_type, start_d, end_d, note=""):
     df = get_data("live_attendance")
@@ -375,13 +416,14 @@ tab_att, tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # --------------------------------
-# 탭 0: 실시간 출퇴근 & 기간별 연차/출장 등록
+# 탭 0: 실시간 출퇴근 & 기간별 연차/출장 및 수동 수정 등록
 # --------------------------------
 with tab_att:
     st.header(f"⏰ {user_name}님의 근태 관리 센터")
-    today_str = str(date.today())
-    now_time_display = datetime.now().strftime("%H:%M")
-    st.caption(f"📅 오늘 날짜: **{today_str}** | 🕒 현재 시간: **{now_time_display}**")
+    today_kst = get_kst_date()
+    today_str = str(today_kst)
+    now_time_display = get_kst_now().strftime("%H:%M:%S")
+    st.caption(f"📅 오늘 날짜(KST): **{today_str}** | 🕒 현재 시각(한국): **{now_time_display}**")
     
     live_df = get_data("live_attendance")
     my_status = None
@@ -403,8 +445,9 @@ with tab_att:
     
     sub_col1, sub_col2 = st.columns(2)
     
+    # 1. 원클릭 당일 출퇴근 체크 (KST 적용)
     with sub_col1:
-        st.subheader("🏢 실시간 출퇴근 체크")
+        st.subheader("🏢 실시간 출퇴근 체크 (원클릭)")
         att_note = st.text_input("출퇴근 비고 (선택사항, 예: 외근 후 바로 출근)", key="att_note_input")
         
         btn_c1, btn_c2 = st.columns(2)
@@ -427,6 +470,7 @@ with tab_att:
                 else:
                     st.warning(msg)
 
+    # 2. 연차 / 반차 / 출장 (기간 등록)
     with sub_col2:
         st.subheader("🌴 연차 / 반차 / 휴가 / 출장 (기간 등록)")
         with st.form("leave_form"):
@@ -434,7 +478,7 @@ with tab_att:
                 "연차", "오전반차", "오후반차", "대체휴무", "경조휴가", "출장", "외근", "재택근무"
             ])
             
-            date_range = st.date_input("적용 날짜 또는 기간(시작일 ~ 종료일)", value=(date.today(), date.today()))
+            date_range = st.date_input("적용 날짜 또는 기간(시작일 ~ 종료일)", value=(today_kst, today_kst))
             leave_reason = st.text_input("사유 및 목적지 (예: 제주출장, 하계휴가)", placeholder="사유를 입력해 주세요")
             
             if st.form_submit_button("근태/휴가 신청하기", use_container_width=True, type="primary"):
@@ -446,7 +490,7 @@ with tab_att:
                     elif len(date_range) == 1:
                         start_d = end_d = date_range[0]
                     else:
-                        start_d = end_d = date.today()
+                        start_d = end_d = today_kst
                 else:
                     start_d = end_d = date_range
                     
@@ -456,9 +500,39 @@ with tab_att:
                     st.rerun()
                 else:
                     st.error(msg)
+
+    st.markdown("---")
+
+    # 3. 출퇴근 시간 직접 수정 / 수동 등록 패널 (신규 추가)
+    with st.expander("✏️ 출퇴근 시간 직접 수정 및 수동 등록 (깜빡했거나 시간 변경 필요 시)"):
+        st.caption("출퇴근 버튼을 제때 누르지 못했거나 시간을 정정해야 할 때 직접 시간을 입력하여 덮어쓸 수 있습니다.")
+        with st.form("manual_att_form"):
+            m_col1, m_col2, m_col3 = st.columns(3)
+            with m_col1:
+                man_date = st.date_input("수정할 날짜", value=today_kst, key="man_date_input")
+            with m_col2:
+                man_type = st.selectbox("근태 구분", ["근무", "연차", "오전반차", "오후반차", "출장", "외근", "재택근무"], key="man_type_input")
+            with m_col3:
+                man_note = st.text_input("비고/사유", placeholder="시간 수정 사유 (예: 현장직접출근)", key="man_note_input")
+                
+            t_col1, t_col2 = st.columns(2)
+            with t_col1:
+                man_in = st.text_input("출근 시간 (예: 09:00:00 또는 08:50)", value=my_status['check_in'] if (my_status is not None and my_status['check_in'] != '-') else "09:00:00", key="man_in_input")
+            with t_col2:
+                man_out = st.text_input("퇴근 시간 (예: 18:00:00 또는 18:30)", value=my_status['check_out'] if (my_status is not None and my_status['check_out'] != '-') else "18:00:00", key="man_out_input")
+                
+            if st.form_submit_button("💾 출퇴근 기록 수동 수정 / 등록 완료", type="primary", use_container_width=True):
+                dept = st.session_state.user_info.get("department", "환경사업부")
+                success, msg = manual_update_attendance(user_name, dept, man_date, man_type, man_in, man_out, man_note)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
                     
     st.markdown("---")
     
+    # 4. 내 신청 내역 조회 & 취소 및 오늘의 전 직원 현황
     sub_tab_me, sub_tab_all = st.tabs(["📝 나의 최근 근태/휴가 신청 내역", "👥 오늘 전 직원 출근 & 근태 현황"])
     
     with sub_tab_me:
@@ -504,7 +578,7 @@ with tab1:
     with st.form("report_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
-            report_date = st.date_input("날짜", date.today(), key="t1_date")
+            report_date = st.date_input("날짜", get_kst_date(), key="t1_date")
         with col2:
             default_dept = st.session_state.user_info.get("department", "환경사업부")
             dept_list = ["환경사업부", "시스템사업부", "총무부"]
@@ -591,7 +665,7 @@ with tab3:
     st.header("부서 통합 업무보고 취합")
     col1, col2 = st.columns(2)
     with col1:
-        m_date = st.date_input("확인할 날짜", date.today(), key="m_date")
+        m_date = st.date_input("확인할 날짜", get_kst_date(), key="m_date")
     with col2:
         m_dept = st.selectbox("관리 부서", ["환경사업부", "시스템사업부", "총무부"], key="m_dept")
 
@@ -628,13 +702,13 @@ with tab3:
                 st.success(f"{m_dept} 통합 보고서가 등록되었습니다.")
 
 # --------------------------------
-# 탭 4: 업무 종합 대시보드 (승인 및 피드백 활성화)
+# 탭 4: 업무 종합 대시보드 (승인 및 피드백)
 # --------------------------------
 with tab4:
     st.header("부서별 업무보고 종합 대시보드")
     col1, col2 = st.columns(2)
     with col1:
-        filter_date = st.date_input("조회할 날짜 선택", date.today(), key="filter_date")
+        filter_date = st.date_input("조회할 날짜 선택", get_kst_date(), key="filter_date")
     with col2:
         filter_dept = st.selectbox("부서 필터링", ["전체", "환경사업부", "시스템사업부", "총무부"], key="filter_dept")
 
