@@ -14,11 +14,9 @@ def get_data(worksheet_name):
         df = df.dropna(how="all")
         if df.empty:
             if worksheet_name == "reports":
-                df = pd.DataFrame(
-                    columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue'])
+                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue'])
             elif worksheet_name == "consolidated_reports":
-                df = pd.DataFrame(
-                    columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
+                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
             elif worksheet_name == "users":
                 df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
         return df
@@ -42,26 +40,30 @@ def generate_new_id(df):
         return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 
-# --- 사용자 계정 관리 함수 ---
 def get_user_credentials():
-    """users 시트에서 사용자 정보를 읽어옵니다."""
     users_df = get_data("users")
-    credentials = {}
-    if not users_df.empty:
+    credentials = {
+        "admin": {"password": "admin1234", "name": "기본관리자", "role": "admin", "department": "총무부"}
+    }
+    if not users_df.empty and 'username' in users_df.columns:
         for _, row in users_df.iterrows():
+            if pd.isna(row.get('username')):
+                continue
             u_id = str(row['username']).strip()
-            credentials[u_id] = {
-                "password": str(row['password']).strip(),
-                "name": str(row.get('name', '')).strip(),
-                "role": str(row.get('role', 'user')).strip(),
-                "department": str(row.get('department', '환경사업부')).strip()
-            }
+            if u_id:
+                credentials[u_id] = {
+                    "password": str(row.get('password', '')).strip(),
+                    "name": str(row.get('name', u_id)).strip(),
+                    "role": str(row.get('role', 'user')).strip(),
+                    "department": str(row.get('department', '환경사업부')).strip()
+                }
     return credentials
 
 def add_user(username, password, name, role="user", department="환경사업부"):
     users_df = get_data("users")
-    if not users_df.empty and username in users_df['username'].astype(str).values:
-        return False, "이미 존재하는 아이디입니다."
+    if not users_df.empty and 'username' in users_df.columns:
+        if username in users_df['username'].astype(str).values:
+            return False, "이미 존재하는 아이디입니다."
     
     new_user = pd.DataFrame([{
         'username': username,
@@ -76,7 +78,7 @@ def add_user(username, password, name, role="user", department="환경사업부"
 
 def delete_user(username):
     users_df = get_data("users")
-    if not users_df.empty:
+    if not users_df.empty and 'username' in users_df.columns:
         if username == "admin":
             return False, "기본 관리자(admin) 계정은 삭제할 수 없습니다."
         updated_df = users_df[users_df['username'].astype(str) != str(username)]
@@ -85,7 +87,6 @@ def delete_user(username):
     return False, "계정 정보를 찾을 수 없습니다."
 
 
-# --- 보고서 데이터 관리 함수 ---
 def insert_report(report_date, department, name, today_result, tomorrow_plan, issue):
     df = get_data("reports")
     new_id = generate_new_id(df)
@@ -99,7 +100,7 @@ def insert_report(report_date, department, name, today_result, tomorrow_plan, is
 
 def save_consolidated_report(report_date, department, manager_name, today_result, tomorrow_plan, issue):
     df = get_data("consolidated_reports")
-    if not df.empty:
+    if not df.empty and 'report_date' in df.columns and 'department' in df.columns:
         df['report_date'] = df['report_date'].astype(str)
         condition = (df['report_date'] == str(report_date)) & (df['department'] == department)
         df = df[~condition]
@@ -114,7 +115,7 @@ def save_consolidated_report(report_date, department, manager_name, today_result
 
 def update_report(report_id, today_result, tomorrow_plan, issue):
     df = get_data("reports")
-    if not df.empty:
+    if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(report_id)].index
         if len(idx) > 0:
@@ -126,29 +127,39 @@ def update_report(report_id, today_result, tomorrow_plan, issue):
 
 def delete_report(report_id):
     df = get_data("reports")
-    if not df.empty:
+    if not df.empty and 'id' in df.columns:
         df['id'] = df['id'].astype(str)
         updated_df = df[df['id'] != str(report_id)]
         save_data("reports", updated_df)
 
 
+def time_to_minutes(t):
+    """HH:MM 형식 문자열을 분 단위 정수로 변환"""
+    if pd.isna(t): return 0
+    try:
+        if isinstance(t, str) and ':' in t:
+            parts = t.split(':')
+            if len(parts) >= 2:
+                return int(parts[0]) * 60 + int(parts[1])
+        return 0
+    except:
+        return 0
+
+
 # --------------------------------
 # 2. 웹 페이지 기본 구성 & 로그인 검증
 # --------------------------------
-st.set_page_config(page_title="일일 업무보고 시스템", layout="wide")
+st.set_page_config(page_title="로커스솔루션 업무 & 근태 관리", layout="wide")
 
-# 세션 상태 초기화
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
 
-# 로그인 / 회원가입 / 계정조회 팝업 다이얼로그
-@st.dialog("📋 일일 업무보고 시스템 - 사용자 인증", width="large")
+@st.dialog("📋 로커스솔루션 포털 - 사용자 인증", width="large")
 def login_dialog():
-    tab_login, tab_signup, tab_users = st.tabs(["🔑 로그인", "➕ 사용자 추가 (등록)", "🔍 등록된 사용자 조회"])
+    tab_login, tab_signup, tab_users = st.tabs(["🔑 로그인", "➕ 사용자 등록", "🔍 사용자 목록"])
     
-    # 1. 로그인 탭
     with tab_login:
         st.write("아이디와 비밀번호를 입력해 주세요.")
         input_id = st.text_input("아이디 (ID)", key="dlg_login_id")
@@ -156,9 +167,6 @@ def login_dialog():
         
         if st.button("로그인", type="primary", use_container_width=True, key="dlg_login_btn"):
             credentials = get_user_credentials()
-            if not credentials:
-                credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin", "department": "총무부"}}
-                
             if input_id in credentials and credentials[input_id]["password"] == input_pw:
                 st.session_state.logged_in = True
                 st.session_state.user_info = credentials[input_id]
@@ -168,15 +176,14 @@ def login_dialog():
             else:
                 st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
 
-    # 2. 사용자 추가 (등록) 탭
     with tab_signup:
         st.write("신규 사용자를 등록합니다.")
-        new_id = st.text_input("아이디 (ID)", key="dlg_reg_id", placeholder="영문/숫자 조합 권장")
+        new_id = st.text_input("아이디 (ID)", key="dlg_reg_id", placeholder="영문/숫자 조합")
         new_pw = st.text_input("비밀번호 (Password)", type="password", key="dlg_reg_pw")
         new_name = st.text_input("이름 (실명)", key="dlg_reg_name", placeholder="홍길동")
         new_dept = st.selectbox("소속 부서", ["환경사업부", "시스템사업부", "총무부"], key="dlg_reg_dept")
         
-        if st.button("사용자 등록하기", type="primary", use_container_width=True, key="dlg_reg_btn"):
+        if st.button("등록하기", type="primary", use_container_width=True, key="dlg_reg_btn"):
             if new_id.strip() and new_pw.strip() and new_name.strip():
                 success, msg = add_user(new_id.strip(), new_pw.strip(), new_name.strip(), role="user", department=new_dept)
                 if success:
@@ -184,39 +191,33 @@ def login_dialog():
                 else:
                     st.error(msg)
             else:
-                st.error("아이디, 비밀번호, 이름을 모두 입력해 주세요.")
+                st.error("모든 항목을 입력해 주세요.")
 
-    # 3. 등록된 사용자 조회 탭
     with tab_users:
-        st.write("현재 등록되어 있는 사용자 목록입니다.")
+        st.write("현재 등록된 임직원 목록입니다.")
         users_df = get_data("users")
         if not users_df.empty:
             display_users = users_df.copy()
-            # 보안을 위해 비밀번호 마스킹
-            if 'password' in display_users.columns:
-                display_users['password'] = "******"
-            
-            rename_cols = {'username': '아이디', 'name': '이름', 'department': '소속 부서', 'role': '권한', 'password': '비밀번호'}
-            display_users = display_users.rename(columns=rename_cols)
-            cols_to_show = [c for c in ['아이디', '이름', '소속 부서', '권한'] if c in display_users.columns]
-            st.dataframe(display_users[cols_to_show], use_container_width=True, hide_index=True)
+            for col in ['username', 'name', 'department', 'role']:
+                if col not in display_users.columns:
+                    display_users[col] = ""
+            display_users = display_users.rename(columns={'username': '아이디', 'name': '이름', 'department': '소속 부서', 'role': '권한'})
+            st.dataframe(display_users[['아이디', '이름', '소속 부서', '권한']], use_container_width=True, hide_index=True)
         else:
             st.info("등록된 사용자 정보가 없습니다.")
 
-# 로그인 검증
 if not st.session_state.logged_in:
-    st.title("📋 일일 업무보고 시스템")
+    st.title("📋 로커스솔루션 통합 업무 관리 포털")
     st.info("서비스를 이용하시려면 먼저 로그인을 완료해 주세요.")
     login_dialog()
     st.stop()
 
 # --- 로그인 완료 후 메인 시스템 ---
 
-# 사이드바 설정
 with st.sidebar:
     st.markdown("### 👤 접속 정보")
-    user_name = st.session_state.user_info['name']
-    user_role = "👑 총괄 관리자" if st.session_state.user_info['role'] == "admin" else "💼 일반 사용자"
+    user_name = st.session_state.user_info.get('name', '사용자')
+    user_role = "👑 총괄 관리자" if st.session_state.user_info.get('role') == "admin" else "💼 일반 임직원"
     st.write(f"**이름**: {user_name}")
     st.write(f"**권한**: {user_role}")
     
@@ -225,7 +226,6 @@ with st.sidebar:
         st.session_state.user_info = None
         st.rerun()
         
-    # 👑 관리자 전용: 사용자 계정 삭제 패널
     if st.session_state.user_info.get("role") == "admin":
         st.markdown("---")
         with st.expander("⚙️ 계정 삭제 관리 (Admin)"):
@@ -240,9 +240,15 @@ with st.sidebar:
                     else:
                         st.error(msg)
 
-st.title("📋 일일 업무보고 시스템")
+st.title("📋 로커스솔루션 통합 업무 포털")
 
-tab1, tab2, tab3, tab4 = st.tabs(["✍️ 보고서 작성", "🔍 내 보고서 관리", "👨‍💼 부서장 통합 보고", "📊 종합 대시보드"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "✍️ 보고서 작성", 
+    "🔍 내 보고서 관리", 
+    "👨‍💼 부서장 통합 보고", 
+    "📊 종합 대시보드",
+    "⏰ 근태 관리 대시보드"
+])
 
 # --------------------------------
 # 탭 1: 보고서 작성
@@ -260,7 +266,7 @@ with tab1:
             department = st.selectbox("소속 부서", dept_list, index=dept_index, key="t1_dept")
         with col3:
             default_name = st.session_state.user_info.get("name", "")
-            name = st.text_input("이름", value=default_name if default_name != "관리자" else "", key="t1_name")
+            name = st.text_input("이름", value=default_name if default_name != "기본관리자" else "", key="t1_name")
 
         st.markdown("---")
         today_result = st.text_area("1. 금일 업무 실적", placeholder="[프로젝트명] 세부 진행 내용 (진척도%)", height=150)
@@ -287,30 +293,29 @@ with tab2:
 
     if search_name.strip():
         df = get_data("reports")
-        if not df.empty:
+        if not df.empty and 'department' in df.columns and 'name' in df.columns:
             my_df = df[(df['department'] == search_dept) & (df['name'] == search_name)].copy()
             if not my_df.empty:
                 my_df = my_df.sort_values(by='report_date', ascending=False)
                 st.subheader(f"{search_name}님의 과거 보고 내역")
-                display_df = my_df.rename(columns={
-                    'report_date': '날짜', 'department': '부서', 'name': '이름',
-                    'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
-                }).drop(columns=['id'])
+                display_cols = {'report_date': '날짜', 'department': '부서', 'name': '이름', 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'}
+                display_df = my_df.rename(columns=display_cols)
+                if 'id' in display_df.columns:
+                    display_df = display_df.drop(columns=['id'])
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
                 st.markdown("---")
                 st.subheader("📝 내 보고서 수정")
-                report_options = {f"{row['report_date']} 업무보고": row['id'] for _, row in my_df.iterrows()}
-                selected_label = st.selectbox("수정/삭제할 보고서 날짜를 선택하세요", list(report_options.keys()),
-                                              key="my_report_select")
+                report_options = {f"{row['report_date']} 업무보고": row['id'] for _, row in my_df.iterrows() if 'id' in row}
+                selected_label = st.selectbox("수정/삭제할 보고서 날짜를 선택하세요", list(report_options.keys()), key="my_report_select")
 
                 if selected_label:
                     selected_id = str(report_options[selected_label])
                     selected_row = my_df[my_df['id'].astype(str) == selected_id].iloc[0]
                     with st.form(key=f"my_edit_form_{selected_id}"):
-                        edit_today = st.text_area("1. 금일 업무 실적", value=selected_row['today_result'], height=150)
-                        edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row['tomorrow_plan'], height=100)
-                        edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row['issue'], height=100)
+                        edit_today = st.text_area("1. 금일 업무 실적", value=selected_row.get('today_result', ''), height=150)
+                        edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row.get('tomorrow_plan', ''), height=100)
+                        edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row.get('issue', ''), height=100)
 
                         btn_col1, btn_col2 = st.columns(2)
                         with btn_col1:
@@ -339,7 +344,7 @@ with tab3:
 
     df = get_data("reports")
     m_df = pd.DataFrame()
-    if not df.empty:
+    if not df.empty and 'report_date' in df.columns and 'department' in df.columns:
         df['report_date'] = df['report_date'].astype(str)
         m_df = df[(df['report_date'] == str(m_date)) & (df['department'] == m_dept)].copy()
 
@@ -347,8 +352,9 @@ with tab3:
     if not m_df.empty:
         display_m_df = m_df.rename(columns={
             'name': '이름', 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
-        })[['이름', '금일 실적', '명일 계획', '특이사항']]
-        st.dataframe(display_m_df, use_container_width=True, hide_index=True)
+        })
+        show_cols = [c for c in ['이름', '금일 실적', '명일 계획', '특이사항'] if c in display_m_df.columns]
+        st.dataframe(display_m_df[show_cols], use_container_width=True, hide_index=True)
     else:
         st.info("아직 해당 날짜에 제출된 팀원 보고서가 없습니다.")
 
@@ -382,12 +388,12 @@ with tab4:
     raw_i_df = get_data("reports")
 
     c_df, i_df = pd.DataFrame(), pd.DataFrame()
-    if not raw_c_df.empty:
+    if not raw_c_df.empty and 'report_date' in raw_c_df.columns:
         raw_c_df['report_date'] = raw_c_df['report_date'].astype(str)
         c_df = raw_c_df[raw_c_df['report_date'] == str(filter_date)].copy() if filter_dept == "전체" else raw_c_df[
             (raw_c_df['report_date'] == str(filter_date)) & (raw_c_df['department'] == filter_dept)].copy()
 
-    if not raw_i_df.empty:
+    if not raw_i_df.empty and 'report_date' in raw_i_df.columns:
         raw_i_df['report_date'] = raw_i_df['report_date'].astype(str)
         i_df = raw_i_df[raw_i_df['report_date'] == str(filter_date)].copy() if filter_dept == "전체" else raw_i_df[
             (raw_i_df['report_date'] == str(filter_date)) & (raw_i_df['department'] == filter_dept)].copy()
@@ -400,8 +406,9 @@ with tab4:
             display_c_df = c_df.rename(columns={
                 'department': '부서', 'manager_name': '부서장',
                 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
-            })[['부서', '부서장', '금일 실적', '명일 계획', '특이사항']]
-            st.dataframe(display_c_df, use_container_width=True, hide_index=True)
+            })
+            show_cols = [c for c in ['부서', '부서장', '금일 실적', '명일 계획', '특이사항'] if c in display_c_df.columns]
+            st.dataframe(display_c_df[show_cols], use_container_width=True, hide_index=True)
         else:
             st.info("해당 조건으로 등록된 부서장 통합 보고서가 없습니다.")
 
@@ -413,9 +420,10 @@ with tab4:
             display_i_df = i_df.rename(columns={
                 'department': '부서', 'name': '이름',
                 'today_result': '금일 실적', 'tomorrow_plan': '명일 계획', 'issue': '특이사항'
-            })[['부서', '이름', '금일 실적', '명일 계획', '특이사항']].reset_index(drop=True)
+            })
+            show_cols = [c for c in ['부서', '이름', '금일 실적', '명일 계획', '특이사항'] if c in display_i_df.columns]
+            display_i_df = display_i_df[show_cols].reset_index(drop=True)
 
-            # 표 클릭 시 선택 이벤트
             selection = st.dataframe(
                 display_i_df,
                 use_container_width=True,
@@ -424,51 +432,148 @@ with tab4:
                 selection_mode="single-row"
             )
 
-            # 선택된 행 하단 카드 출력
             selected_rows = selection.selection.rows
             if selected_rows:
                 selected_idx = selected_rows[0]
                 selected_row = i_df.iloc[selected_idx]
 
                 st.markdown("---")
-                st.subheader(f"📄 [{selected_row['department']}] {selected_row['name']}님의 업무보고 상세")
+                st.subheader(f"📄 [{selected_row.get('department', '')}] {selected_row.get('name', '')}님의 업무보고 상세")
                 
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.text_input("날짜", value=str(selected_row['report_date']), disabled=True, key="view_date")
+                    st.text_input("날짜", value=str(selected_row.get('report_date', '')), disabled=True, key="view_date")
                 with c2:
-                    st.text_input("소속 부서", value=str(selected_row['department']), disabled=True, key="view_dept")
+                    st.text_input("소속 부서", value=str(selected_row.get('department', '')), disabled=True, key="view_dept")
                 with c3:
-                    st.text_input("이름", value=str(selected_row['name']), disabled=True, key="view_name")
+                    st.text_input("이름", value=str(selected_row.get('name', '')), disabled=True, key="view_name")
 
-                st.text_area("1. 금일 업무 실적", value=str(selected_row['today_result']), height=150, disabled=True, key="view_today")
-                st.text_area("2. 명일 업무 계획", value=str(selected_row['tomorrow_plan']), height=100, disabled=True, key="view_tomorrow")
-                st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row['issue']), height=100, disabled=True, key="view_issue")
+                st.text_area("1. 금일 업무 실적", value=str(selected_row.get('today_result', '')), height=150, disabled=True, key="view_today")
+                st.text_area("2. 명일 업무 계획", value=str(selected_row.get('tomorrow_plan', '')), height=100, disabled=True, key="view_tomorrow")
+                st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row.get('issue', '')), height=100, disabled=True, key="view_issue")
 
-            # 👑 관리자 전용 수정/삭제 패널
             if st.session_state.user_info.get("role") == "admin":
                 with st.expander("👑 관리자 전용 개별 보고서 강제 수정/삭제"):
-                    report_options = {f"{row['name']} ({row['department']})": row['id'] for _, row in i_df.iterrows()}
-                    selected_label = st.selectbox("조치할 직원의 보고서를 선택하세요", list(report_options.keys()))
-                    if selected_label:
-                        selected_id = str(report_options[selected_label])
-                        selected_row = i_df[i_df['id'].astype(str) == selected_id].iloc[0]
-                        with st.form(key=f"admin_edit_form_{selected_id}"):
-                            edit_today = st.text_area("1. 금일 업무 실적", value=selected_row['today_result'], height=150)
-                            edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row['tomorrow_plan'], height=100)
-                            edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row['issue'], height=100)
-                            btn_col1, btn_col2 = st.columns(2)
-                            with btn_col1:
-                                if st.form_submit_button("강제 수정", type="primary"):
-                                    update_report(selected_id, edit_today, edit_tomorrow, edit_issue)
-                                    st.success("수정되었습니다.")
-                                    st.rerun()
-                            with btn_col2:
-                                if st.form_submit_button("강제 삭제"):
-                                    delete_report(selected_id)
-                                    st.warning("삭제되었습니다.")
-                                    st.rerun()
-            else:
-                st.caption("🔒 개별 보고서 강제 수정/삭제 권한은 총괄 관리자(admin) 계정에만 부여됩니다.")
+                    report_options = {f"{row.get('name', '')} ({row.get('department', '')})": row['id'] for _, row in i_df.iterrows() if 'id' in row}
+                    if report_options:
+                        selected_label = st.selectbox("조치할 직원의 보고서를 선택하세요", list(report_options.keys()))
+                        if selected_label:
+                            selected_id = str(report_options[selected_label])
+                            selected_row = i_df[i_df['id'].astype(str) == selected_id].iloc[0]
+                            with st.form(key=f"admin_edit_form_{selected_id}"):
+                                edit_today = st.text_area("1. 금일 업무 실적", value=selected_row.get('today_result', ''), height=150)
+                                edit_tomorrow = st.text_area("2. 명일 업무 계획", value=selected_row.get('tomorrow_plan', ''), height=100)
+                                edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=selected_row.get('issue', ''), height=100)
+                                btn_col1, btn_col2 = st.columns(2)
+                                with btn_col1:
+                                    if st.form_submit_button("강제 수정", type="primary"):
+                                        update_report(selected_id, edit_today, edit_tomorrow, edit_issue)
+                                        st.success("수정되었습니다.")
+                                        st.rerun()
+                                with btn_col2:
+                                    if st.form_submit_button("강제 삭제"):
+                                        delete_report(selected_id)
+                                        st.warning("삭제되었습니다.")
+                                        st.rerun()
         else:
             st.info("해당 조건으로 제출된 개별 보고서가 없습니다.")
+
+# --------------------------------
+# 탭 5: 근태 관리 대시보드 (신규 기능)
+# --------------------------------
+with tab5:
+    st.header("⏰ 임직원 월간 근태 분석 & 관리")
+    st.caption("로커스솔루션 근태기록 엑셀 파일(.xlsx)을 업로드하면 자동으로 통계 및 이상 근태를 분석합니다.")
+    
+    uploaded_file = st.file_uploader("월간 근태기록 엑셀 파일 업로드", type=["xlsx", "xls"], key="attendance_uploader")
+    
+    if uploaded_file is not None:
+        try:
+            att_df = pd.read_excel(uploaded_file, sheet_name=0)
+            
+            # 필수 컬럼 존재 여부 체크
+            req_cols = ['근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
+            if all(col in att_df.columns for col in req_cols):
+                
+                att_df['총근무_분'] = att_df['총근무시간'].apply(time_to_minutes)
+                att_df['연장근무_분'] = att_df['연장근무시간'].apply(time_to_minutes)
+                att_df['지각여부'] = att_df['출근판정'] == '지각'
+                att_df['결근여부'] = att_df['출근판정'] == '결근'
+                att_df['조퇴여부'] = att_df['퇴근판정'] == '조퇴'
+                
+                # 전체 요약 집계
+                total_emps = att_df['이름'].nunique()
+                total_work_hours = att_df['총근무_분'].sum() / 60
+                total_over_hours = att_df['연장근무_분'].sum() / 60
+                total_late_cnt = att_df['지각여부'].sum()
+                total_early_cnt = att_df['조퇴여부'].sum()
+                
+                st.markdown("### 📊 전체 근태 종합 요약")
+                kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+                kpi1.metric("총 대상 인원", f"{total_emps}명")
+                kpi2.metric("총 근무 시간", f"{total_work_hours:,.1f}시간")
+                kpi3.metric("총 연장근무", f"{total_over_hours:,.1f}시간")
+                kpi4.metric("총 지각 발생", f"{total_late_cnt}건")
+                kpi5.metric("총 조퇴 발생", f"{total_early_cnt}건")
+                
+                st.markdown("---")
+                
+                # 직원별 요약 테이블 생성
+                emp_summary = att_df.groupby('이름').agg(
+                    근무일수=('근무일자', 'count'),
+                    정상출근일수=('출근판정', lambda x: (x == '정상출근').sum()),
+                    지각횟수=('지각여부', 'sum'),
+                    조퇴횟수=('조퇴여부', 'sum'),
+                    출장휴가등_결근=('결근여부', 'sum'),
+                    총근무시간=('총근무_분', lambda x: round(sum(x) / 60, 1)),
+                    총연장근무=('연장근무_분', lambda x: round(sum(x) / 60, 1))
+                ).reset_index()
+                
+                emp_summary = emp_summary.sort_values(by='총근무시간', ascending=False).reset_index(drop=True)
+                
+                sub_tab1, sub_tab2 = st.tabs(["🏆 직원별 근태 순위 요약", "🔍 개인별 상세 출퇴근 타임라인"])
+                
+                with sub_tab1:
+                    st.subheader("직원별 근태 통계 순위")
+                    display_summary = emp_summary.rename(columns={
+                        '이름': '직원명',
+                        '근무일수': '기록일수',
+                        '정상출근일수': '정상 출근',
+                        '지각횟수': '지각(회)',
+                        '조퇴횟수': '조퇴(회)',
+                        '출장휴가등_결근': '출장/휴가(결근)',
+                        '총근무시간': '총 근무(시간)',
+                        '총연장근무': '연장근무(시간)'
+                    })
+                    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+                    
+                    st.markdown("#### 💡 관리자 점검 체크포인트")
+                    c_warn1, c_warn2 = st.columns(2)
+                    with c_warn1:
+                        over_top = emp_summary.sort_values(by='총연장근무', ascending=False).head(3)
+                        st.info(f"🔥 **연장근무 상위자 Top 3**: " + ", ".join([f"{r['이름']} ({r['총연장근무']}h)" for _, r in over_top.iterrows()]))
+                    with c_warn2:
+                        late_top = emp_summary[emp_summary['지각횟수'] > 0].sort_values(by='지각횟수', ascending=False)
+                        if not late_top.empty:
+                            st.warning(f"⚠️ **지각 발생 인원**: " + ", ".join([f"{r['이름']} ({r['지각횟수']}회)" for _, r in late_top.iterrows()]))
+                        else:
+                            st.success("✅ 지각자가 없습니다.")
+                            
+                with sub_tab2:
+                    st.subheader("개인별 상세 출퇴근 기록")
+                    selected_emp = st.selectbox("조회할 직원을 선택하세요", emp_summary['이름'].tolist(), key="att_emp_select")
+                    
+                    if selected_emp:
+                        user_att = att_df[att_df['이름'] == selected_emp].copy()
+                        user_att['근무일자'] = user_att['근무일자'].astype(str)
+                        
+                        show_cols = ['근무일자', '출근시간', '퇴근시간', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
+                        present_cols = [c for c in show_cols if c in user_att.columns]
+                        
+                        st.dataframe(user_att[present_cols], use_container_width=True, hide_index=True)
+            else:
+                st.error("엑셀 파일 양식이 맞지 않습니다. ('근무일자', '이름', '출근판정', '총근무시간' 컬럼이 포함되어야 합니다.)")
+        except Exception as e:
+            st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+    else:
+        st.info("👆 위 파일 업로더에 근태 엑셀 파일(예: 2026년 7월.xlsx)을 업로드해 주세요.")
