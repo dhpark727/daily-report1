@@ -21,6 +21,11 @@ def get_data(worksheet_name):
                 df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
             elif worksheet_name == "live_attendance":
                 df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+        else:
+            # 안전을 위해 모든 결측치(NaN) 빈 문자열 처리 및 문자열 타입 변환
+            df = df.fillna("")
+            for col in df.columns:
+                df[col] = df[col].astype(str)
         return df
     except Exception as e:
         st.error(f"구글 시트 연결 오류 ({worksheet_name}): {e}")
@@ -30,6 +35,7 @@ def get_data(worksheet_name):
 def save_data(worksheet_name, df):
     """구글 시트에 데이터를 저장합니다."""
     conn = st.connection("gsheets", type=GSheetsConnection)
+    df = df.fillna("")
     conn.update(worksheet=worksheet_name, data=df)
     st.cache_data.clear()
 
@@ -68,11 +74,11 @@ def add_user(username, password, name, role="user", department="환경사업부"
             return False, "이미 존재하는 아이디입니다."
     
     new_user = pd.DataFrame([{
-        'username': username,
-        'password': password,
-        'name': name,
-        'role': role,
-        'department': department
+        'username': str(username),
+        'password': str(password),
+        'name': str(name),
+        'role': str(role),
+        'department': str(department)
     }])
     updated_df = pd.concat([users_df, new_user], ignore_index=True)
     save_data("users", updated_df)
@@ -104,25 +110,25 @@ def record_attendance(name, department, att_type, note=""):
     user_today = df[(df['date'] == today_str) & (df['name'] == str(name))]
     
     if att_type == "출근":
-        if not user_today.empty and user_today.iloc[0]['check_in'] != "-" and pd.notna(user_today.iloc[0]['check_in']):
+        if not user_today.empty and user_today.iloc[0]['check_in'] != "-" and str(user_today.iloc[0]['check_in']).strip() != "":
             return False, f"이미 오늘 출근 체크({user_today.iloc[0]['check_in']})가 완료되었습니다."
         if not user_today.empty:
             idx = user_today.index[0]
             df.loc[idx, 'check_in'] = now_time_str
             df.loc[idx, 'type'] = "근무"
-            if note: df.loc[idx, 'note'] = note
+            if note: df.loc[idx, 'note'] = str(note)
         else:
             new_id = generate_new_id(df)
             new_row = pd.DataFrame([{
-                'id': new_id, 'date': today_str, 'name': name, 'department': department,
-                'type': '근무', 'check_in': now_time_str, 'check_out': '-', 'note': note
+                'id': str(new_id), 'date': today_str, 'name': str(name), 'department': str(department),
+                'type': '근무', 'check_in': now_time_str, 'check_out': '-', 'note': str(note)
             }])
             df = pd.concat([df, new_row], ignore_index=True)
         save_data("live_attendance", df)
         return True, f"[{now_time_str}] 출근 체크 완료!"
 
     elif att_type == "퇴근":
-        if user_today.empty or user_today.iloc[0]['check_in'] == "-" or pd.isna(user_today.iloc[0]['check_in']):
+        if user_today.empty or user_today.iloc[0]['check_in'] == "-" or str(user_today.iloc[0]['check_in']).strip() == "":
             return False, "출근 기록이 먼저 확인되어야 퇴근을 기록할 수 있습니다."
         idx = user_today.index[0]
         df.loc[idx, 'check_out'] = now_time_str
@@ -147,15 +153,15 @@ def record_leave_range(name, department, leave_type, start_d, end_d, note=""):
         existing = df[(df['date'] == d_str) & (df['name'] == str(name))]
         if not existing.empty:
             idx = existing.index[0]
-            df.loc[idx, 'type'] = leave_type
-            df.loc[idx, 'note'] = note
+            df.loc[idx, 'type'] = str(leave_type)
+            df.loc[idx, 'note'] = str(note)
             df.loc[idx, 'check_in'] = '-'
             df.loc[idx, 'check_out'] = '-'
         else:
             new_id = generate_new_id(df)
             new_row = pd.DataFrame([{
-                'id': new_id, 'date': d_str, 'name': name, 'department': department,
-                'type': leave_type, 'check_in': '-', 'check_out': '-', 'note': note
+                'id': str(new_id), 'date': d_str, 'name': str(name), 'department': str(department),
+                'type': str(leave_type), 'check_in': '-', 'check_out': '-', 'note': str(note)
             }])
             df = pd.concat([df, new_row], ignore_index=True)
         
@@ -180,8 +186,8 @@ def insert_report(report_date, department, name, today_result, tomorrow_plan, is
     df = get_data("reports")
     new_id = generate_new_id(df)
     new_row = pd.DataFrame([{
-        'id': new_id, 'report_date': str(report_date), 'department': department,
-        'name': name, 'today_result': today_result, 'tomorrow_plan': tomorrow_plan, 'issue': issue,
+        'id': str(new_id), 'report_date': str(report_date), 'department': str(department),
+        'name': str(name), 'today_result': str(today_result), 'tomorrow_plan': str(tomorrow_plan), 'issue': str(issue),
         'status': '제출완료', 'comment': ''
     }])
     updated_df = pd.concat([df, new_row], ignore_index=True)
@@ -196,37 +202,50 @@ def save_consolidated_report(report_date, department, manager_name, today_result
         df = df[~condition]
     new_id = generate_new_id(df)
     new_row = pd.DataFrame([{
-        'id': new_id, 'report_date': str(report_date), 'department': department,
-        'manager_name': manager_name, 'today_result': today_result, 'tomorrow_plan': tomorrow_plan, 'issue': issue
+        'id': str(new_id), 'report_date': str(report_date), 'department': str(department),
+        'manager_name': str(manager_name), 'today_result': str(today_result), 'tomorrow_plan': str(tomorrow_plan), 'issue': str(issue)
     }])
     updated_df = pd.concat([df, new_row], ignore_index=True)
     save_data("consolidated_reports", updated_df)
 
 
 def update_report_full(report_id, today_result, tomorrow_plan, issue, status, comment):
-    """보고서 수정 및 최종 승인 처리"""
+    """보고서 수정 및 최종 승인 처리 (타입 오류 방어 적용)"""
     df = get_data("reports")
     if not df.empty and 'id' in df.columns:
+        # 컬럼 미존재 시 생성 및 object(문자열) 타입 보장
+        for col in ['status', 'comment', 'today_result', 'tomorrow_plan', 'issue']:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
+
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(report_id)].index
         if len(idx) > 0:
-            df.loc[idx, 'today_result'] = today_result
-            df.loc[idx, 'tomorrow_plan'] = tomorrow_plan
-            df.loc[idx, 'issue'] = issue
-            df.loc[idx, 'status'] = status
-            df.loc[idx, 'comment'] = comment
+            target_idx = idx[0]
+            df.at[target_idx, 'today_result'] = str(today_result)
+            df.at[target_idx, 'tomorrow_plan'] = str(tomorrow_plan)
+            df.at[target_idx, 'issue'] = str(issue)
+            df.at[target_idx, 'status'] = str(status)
+            df.at[target_idx, 'comment'] = str(comment)
             save_data("reports", df)
 
 
 def update_report(report_id, today_result, tomorrow_plan, issue):
     df = get_data("reports")
     if not df.empty and 'id' in df.columns:
+        for col in ['today_result', 'tomorrow_plan', 'issue']:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
+            
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(report_id)].index
         if len(idx) > 0:
-            df.loc[idx, 'today_result'] = today_result
-            df.loc[idx, 'tomorrow_plan'] = tomorrow_plan
-            df.loc[idx, 'issue'] = issue
+            target_idx = idx[0]
+            df.at[target_idx, 'today_result'] = str(today_result)
+            df.at[target_idx, 'tomorrow_plan'] = str(tomorrow_plan)
+            df.at[target_idx, 'issue'] = str(issue)
             save_data("reports", df)
 
 
@@ -378,7 +397,7 @@ with tab_att:
     c_st1.metric("근태 유형", my_status['type'] if my_status is not None else "미기록")
     c_st2.metric("출근 시간", my_status['check_in'] if my_status is not None else "-")
     c_st3.metric("퇴근 시간", my_status['check_out'] if my_status is not None else "-")
-    c_st4.metric("메모/비고", my_status['note'] if my_status is not None and pd.notna(my_status['note']) else "-")
+    c_st4.metric("메모/비고", my_status['note'] if my_status is not None and str(my_status['note']).strip() != "" else "-")
     
     st.markdown("---")
     
@@ -680,7 +699,6 @@ with tab4:
                 st.markdown("---")
                 st.subheader(f"📄 [{selected_row.get('department', '')}] {selected_row.get('name', '')}님의 업무보고 상세 검토 & 승인")
                 
-                # 활성화된 폼 (수정, 코멘트 및 최종 승인)
                 with st.form(key=f"approve_form_{target_id}"):
                     c1, c2, c3, c4 = st.columns(4)
                     with c1:
@@ -693,7 +711,6 @@ with tab4:
                         curr_status = str(selected_row.get('status', '제출완료'))
                         st.text_input("현재 승인 상태", value=curr_status, disabled=True)
 
-                    # 활성화된 보고서 내용
                     detail_today = st.text_area("1. 금일 업무 실적", value=str(selected_row.get('today_result', '')), height=140)
                     detail_tomorrow = st.text_area("2. 명일 업무 계획", value=str(selected_row.get('tomorrow_plan', '')), height=100)
                     detail_issue = st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row.get('issue', '')), height=100)
