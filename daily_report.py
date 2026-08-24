@@ -6,6 +6,41 @@ from tab_reports import render_report_portal
 
 st.set_page_config(page_title="로커스솔루션 통합 업무 포털", layout="wide")
 
+# --------------------------------
+# 메인 탭 글자 크기 및 위계 조절 CSS 주입
+# --------------------------------
+st.markdown("""
+<style>
+    /* 1. 최상단 메인 포털 3대 탭 스타일 (크고 굵게) */
+    div[data-testid="stTabs"] > div:first-child button[data-baseweb="tab"] {
+        font-size: 1.25rem !important;
+        font-weight: 800 !important;
+        padding: 12px 24px !important;
+        color: #4A5568 !important;
+        letter-spacing: -0.5px;
+    }
+
+    /* 메인 탭 선택 시 강조 효과 */
+    div[data-testid="stTabs"] > div:first-child button[aria-selected="true"] {
+        color: #1E88E5 !important;
+        border-bottom: 3.5px solid #1E88E5 !important;
+    }
+
+    /* 2. 내부 서브탭 (2계층) 스타일 (기본 크기로 유지하여 위계 구분) */
+    div[data-testid="stTabs"] div[data-testid="stTabs"] > div:first-child button[data-baseweb="tab"] {
+        font-size: 0.98rem !important;
+        font-weight: 600 !important;
+        padding: 8px 16px !important;
+        color: #718096 !important;
+    }
+    
+    div[data-testid="stTabs"] div[data-testid="stTabs"] > div:first-child button[aria-selected="true"] {
+        color: #2D3748 !important;
+        border-bottom: 2px solid #2D3748 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # 세션 초기화
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "user_info" not in st.session_state: st.session_state.user_info = None
