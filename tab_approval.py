@@ -216,8 +216,27 @@ def render_approval_tab(user_name, user_dept, user_role):
                     receipt_dict[t_id] = uploaded_receipt
                     st.session_state["expense_receipts"] = receipt_dict
                     
+                # 안전한 영수증/문서 미리보기 및 다운로드 처리 (PDF / Image 분기)
                 if t_id in receipt_dict:
-                    st.image(receipt_dict[t_id], caption="📄 첨부된 영수증 증빙 서류", width=400)
+                    file_obj = receipt_dict[t_id]
+                    file_name = file_obj.name.lower()
+                    if file_name.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        try:
+                            st.image(file_obj, caption=f"📄 첨부된 영수증 이미지 ({file_obj.name})", width=400)
+                        except Exception:
+                            st.info(f"📄 첨부된 영수증 파일: **{file_obj.name}**")
+                    elif file_name.endswith('.pdf'):
+                        st.info(f"📄 첨부된 PDF 증빙 문서: **{file_obj.name}**")
+                        file_obj.seek(0)
+                        st.download_button(
+                            label="📥 첨부된 PDF 문서 다운로드하여 열람",
+                            data=file_obj.read(),
+                            file_name=file_obj.name,
+                            mime="application/pdf",
+                            key=f"download_pdf_{t_id}"
+                        )
+                    else:
+                        st.info(f"📄 첨부된 증빙 파일: **{file_obj.name}**")
                 
                 with st.form(key=f"expense_form_{t_id}"):
                     actual_spent = st.text_input("실제 사용 금액 (원)", value=str(t_row.get('spent_amount', '0')))
