@@ -25,6 +25,8 @@ APPROVAL_COLS = [
     'final_approver', 'final_comment', 'spent_amount', 'expense_details', 'expense_status'
 ]
 
+USER_COLS = ['username', 'password', 'name', 'role', 'department', 'position']
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_sheet_data(worksheet_name):
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -37,7 +39,7 @@ def fetch_sheet_data(worksheet_name):
             elif worksheet_name == "consolidated_reports":
                 df = pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
             elif worksheet_name == "users":
-                df = pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
+                df = pd.DataFrame(columns=USER_COLS)
             elif worksheet_name == "live_attendance":
                 df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
             elif worksheet_name == "approvals":
@@ -58,7 +60,7 @@ def get_data(worksheet_name):
         elif worksheet_name == "consolidated_reports":
             return pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
         elif worksheet_name == "users":
-            return pd.DataFrame(columns=['username', 'password', 'name', 'role', 'department'])
+            return pd.DataFrame(columns=USER_COLS)
         elif worksheet_name == "live_attendance":
             return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
         elif worksheet_name == "approvals":
@@ -78,33 +80,72 @@ def generate_new_id(df):
     return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 # --------------------------------
-# 2. 사용자 계정 관리
+# 2. 사용자 계정 관리 (직책 position 포함)
 # --------------------------------
 def get_user_credentials():
     users_df = get_data("users")
-    credentials = {"admin": {"password": "admin1234", "name": "기본관리자", "role": "admin", "department": "총무부"}}
+    credentials = {
+        "admin": {
+            "password": "admin1234",
+            "name": "기본관리자",
+            "role": "admin",
+            "department": "총무부",
+            "position": "대표이사"
+        }
+    }
     if not users_df.empty and 'username' in users_df.columns:
         for _, row in users_df.iterrows():
             if pd.isna(row.get('username')): 
                 continue
             u_id = str(row['username']).strip()
             if u_id:
+                pos_val = str(row.get('position', '')).strip()
+                if not pos_val:
+                    pos_val = "대표이사" if str(row.get('role', '')).strip() == "admin" else "사원"
                 credentials[u_id] = {
                     "password": str(row.get('password', '')).strip(),
                     "name": str(row.get('name', u_id)).strip(),
                     "role": str(row.get('role', 'user')).strip(),
-                    "department": str(row.get('department', '환경사업부')).strip()
+                    "department": str(row.get('department', '환경사업부')).strip(),
+                    "position": pos_val
                 }
     return credentials
 
-def add_user(username, password, name, role="user", department="환경사업부"):
+def add_user(username, password, name, role="user", department="환경사업부", position="사원"):
     users_df = get_data("users")
+    for col in USER_COLS:
+        if col not in users_df.columns:
+            users_df[col] = ""
     if not users_df.empty and 'username' in users_df.columns:
         if username in users_df['username'].astype(str).values:
             return False, "이미 존재하는 아이디입니다."
-    new_user = pd.DataFrame([{'username': str(username), 'password': str(password), 'name': str(name), 'role': str(role), 'department': str(department)}])
+    new_user = pd.DataFrame([{
+        'username': str(username),
+        'password': str(password),
+        'name': str(name),
+        'role': str(role),
+        'department': str(department),
+        'position': str(position)
+    }])
     save_data("users", pd.concat([users_df, new_user], ignore_index=True))
-    return True, f"'{name}' 사용자가 성공적으로 등록되었습니다."
+    return True, f"'{name} ({position})' 사용자가 성공적으로 등록되었습니다."
+
+def update_user_position(username, new_dept, new_pos):
+    """기존 사용자의 부서 및 직책 정보를 업데이트"""
+    users_df = get_data("users")
+    if not users_df.empty and 'username' in users_df.columns:
+        for col in USER_COLS:
+            if col not in users_df.columns:
+                users_df[col] = ""
+            users_df[col] = users_df[col].astype(object)
+        idx = users_df[users_df['username'].astype(str) == str(username)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            users_df.at[t_idx, 'department'] = str(new_dept)
+            users_df.at[t_idx, 'position'] = str(new_pos)
+            save_data("users", users_df)
+            return True, f"'{username}' 계정의 직책/부서 정보가 수정되었습니다."
+    return False, "사용자 정보를 찾을 수 없습니다."
 
 def delete_user(username):
     users_df = get_data("users")
@@ -268,7 +309,7 @@ def time_to_minutes(t):
         return 0
 
 # --------------------------------
-# 5. 전자결재 & 지출정산 관리 (유연한 결재선 및 대표승인 요/불요 지원)
+# 5. 전자결재 & 지출정산 관리
 # --------------------------------
 def _determine_initial_status(mgr1, mgr2, final_req):
     """기안 또는 수정 시 최초 진입할 결재 대기 단계 결정"""
@@ -340,7 +381,6 @@ def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr
             if related_doc_id is not None:
                 df.at[t_idx, 'related_doc_id'] = str(related_doc_id)
                 
-            # 미승인/반려 문서 수정 시 결재 단계 재산정
             df.at[t_idx, 'status'] = _determine_initial_status(m1_val, m2_val, final_req)
             save_data("approvals", df)
             return True, "품의서 내용 및 결재선이 수정되었습니다."
