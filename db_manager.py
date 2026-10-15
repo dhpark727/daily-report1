@@ -20,9 +20,9 @@ def get_kst_date():
 APPROVAL_COLS = [
     'id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department',
     'budget', 'content', 'status', 'target_manager1', 'target_manager2',
-    'cc_users', 'attachment_name', 'related_doc_id', 'manager1_name', 'manager1_comment',
-    'manager2_name', 'manager2_comment', 'final_approver', 'final_comment',
-    'spent_amount', 'expense_details', 'expense_status'
+    'final_approval_req', 'cc_users', 'attachment_name', 'related_doc_id',
+    'manager1_name', 'manager1_comment', 'manager2_name', 'manager2_comment',
+    'final_approver', 'final_comment', 'spent_amount', 'expense_details', 'expense_status'
 ]
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -268,33 +268,52 @@ def time_to_minutes(t):
         return 0
 
 # --------------------------------
-# 5. 전자결재 & 지출정산 관리
+# 5. 전자결재 & 지출정산 관리 (유연한 결재선 및 대표승인 요/불요 지원)
 # --------------------------------
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, cc_users, content, attachment_name="", related_doc_id=""):
+def _determine_initial_status(mgr1, mgr2, final_req):
+    """기안 또는 수정 시 최초 진입할 결재 대기 단계 결정"""
+    m1_clean = str(mgr1).strip()
+    m2_clean = str(mgr2).strip()
+    if m1_clean not in ["", "없음", "선택 안 함"]:
+        return "1차결재대기"
+    elif m2_clean not in ["", "없음", "선택 안 함"]:
+        return "2차결재대기"
+    elif str(final_req).strip() == "대표승인 요":
+        return "최종결재대기"
+    return "승인완료(집행가능)"
+
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name="", related_doc_id=""):
     df = get_data("approvals")
     for col in APPROVAL_COLS:
         if col not in df.columns:
             df[col] = ""
     new_id = generate_new_id(df)
     now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
+    
+    m1_val = str(target_mgr1).strip() if str(target_mgr1).strip() not in ["", "선택 안 함"] else "없음"
+    m2_val = str(target_mgr2).strip() if str(target_mgr2).strip() not in ["", "선택 안 함"] else "없음"
+    init_status = _determine_initial_status(m1_val, m2_val, final_req)
+    exp_status = "정산대기" if init_status == "승인완료(집행가능)" else "미집행"
+
     new_row = pd.DataFrame([{
         'id': str(new_id), 'created_at': now_str, 'doc_type': str(doc_type),
         'title': str(title), 'drafter_name': str(drafter_name), 'department': str(department),
-        'budget': str(budget), 'content': str(content), 'status': '1차결재대기',
-        'target_manager1': str(target_mgr1),
-        'target_manager2': str(target_mgr2) if target_mgr2 else "없음",
+        'budget': str(budget), 'content': str(content), 'status': init_status,
+        'target_manager1': m1_val,
+        'target_manager2': m2_val,
+        'final_approval_req': str(final_req),
         'cc_users': str(", ".join(cc_users)) if cc_users else "없음",
         'attachment_name': str(attachment_name),
         'related_doc_id': str(related_doc_id) if related_doc_id else "",
         'manager1_name': '', 'manager1_comment': '',
         'manager2_name': '', 'manager2_comment': '',
         'final_approver': '', 'final_comment': '',
-        'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
+        'spent_amount': '0', 'expense_details': '', 'expense_status': exp_status
     }])
     save_data("approvals", pd.concat([df, new_row], ignore_index=True))
     return True, new_id
 
-def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr2, cc_users, content, attachment_name=None, related_doc_id=None):
+def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name=None, related_doc_id=None):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         for col in APPROVAL_COLS:
@@ -305,26 +324,35 @@ def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
             t_idx = idx[0]
+            m1_val = str(target_mgr1).strip() if str(target_mgr1).strip() not in ["", "선택 안 함"] else "없음"
+            m2_val = str(target_mgr2).strip() if str(target_mgr2).strip() not in ["", "선택 안 함"] else "없음"
+            
             df.at[t_idx, 'doc_type'] = str(doc_type)
             df.at[t_idx, 'title'] = str(title)
             df.at[t_idx, 'budget'] = str(budget)
-            df.at[t_idx, 'target_manager1'] = str(target_mgr1)
-            df.at[t_idx, 'target_manager2'] = str(target_mgr2) if target_mgr2 else "없음"
+            df.at[t_idx, 'target_manager1'] = m1_val
+            df.at[t_idx, 'target_manager2'] = m2_val
+            df.at[t_idx, 'final_approval_req'] = str(final_req)
             df.at[t_idx, 'cc_users'] = str(", ".join(cc_users)) if cc_users else "없음"
             df.at[t_idx, 'content'] = str(content)
             if attachment_name is not None:
                 df.at[t_idx, 'attachment_name'] = str(attachment_name)
             if related_doc_id is not None:
                 df.at[t_idx, 'related_doc_id'] = str(related_doc_id)
-            if '반려' in str(df.at[t_idx, 'status']):
-                df.at[t_idx, 'status'] = '1차결재대기'
+                
+            # 미승인/반려 문서 수정 시 결재 단계 재산정
+            df.at[t_idx, 'status'] = _determine_initial_status(m1_val, m2_val, final_req)
             save_data("approvals", df)
-            return True, "품의서 내용이 수정되었습니다."
+            return True, "품의서 내용 및 결재선이 수정되었습니다."
     return False, "문서를 찾을 수 없습니다."
 
 def approve_step1(doc_id, manager_name, comment, is_reject=False):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
+        for col in APPROVAL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
@@ -333,30 +361,60 @@ def approve_step1(doc_id, manager_name, comment, is_reject=False):
             df.at[t_idx, 'manager1_comment'] = str(comment)
             if is_reject:
                 df.at[t_idx, 'status'] = '1차반려'
+                msg = "1차 반려 처리되었습니다."
             else:
                 has_mgr2 = str(df.at[t_idx, 'target_manager2']).strip() not in ["", "없음", "선택 안 함"]
-                df.at[t_idx, 'status'] = '2차결재대기' if has_mgr2 else '최종결재대기'
+                final_req = str(df.at[t_idx, 'final_approval_req']).strip()
+                if has_mgr2:
+                    df.at[t_idx, 'status'] = '2차결재대기'
+                    msg = "1차 승인 완료! 2차 결재로 넘어갔습니다."
+                elif final_req == "대표 승인 불요":
+                    df.at[t_idx, 'status'] = '승인완료(집행가능)'
+                    df.at[t_idx, 'expense_status'] = '정산대기'
+                    msg = "1차 승인 완료! (대표 승인 불요 건으로 최종 승인 및 집행 가능 처리되었습니다.)"
+                else:
+                    df.at[t_idx, 'status'] = '최종결재대기'
+                    msg = "1차 승인 완료! 최종 결재(대표 승인) 대기 상태로 넘어갔습니다."
             save_data("approvals", df)
-            return True, "1차 반려 처리되었습니다." if is_reject else "1차 승인이 완료되었습니다."
+            return True, msg
     return False, "문서를 찾을 수 없습니다."
 
 def approve_step2(doc_id, manager_name, comment, is_reject=False):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
+        for col in APPROVAL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
             t_idx = idx[0]
             df.at[t_idx, 'manager2_name'] = str(manager_name)
             df.at[t_idx, 'manager2_comment'] = str(comment)
-            df.at[t_idx, 'status'] = '2차반려' if is_reject else '최종결재대기'
+            if is_reject:
+                df.at[t_idx, 'status'] = '2차반려'
+                msg = "2차 반려 처리되었습니다."
+            else:
+                final_req = str(df.at[t_idx, 'final_approval_req']).strip()
+                if final_req == "대표 승인 불요":
+                    df.at[t_idx, 'status'] = '승인완료(집행가능)'
+                    df.at[t_idx, 'expense_status'] = '정산대기'
+                    msg = "2차 승인 완료! (대표 승인 불요 건으로 최종 승인 및 집행 가능 처리되었습니다.)"
+                else:
+                    df.at[t_idx, 'status'] = '최종결재대기'
+                    msg = "2차 승인 완료! 최종 결재(대표 승인)로 상신되었습니다."
             save_data("approvals", df)
-            return True, "2차 반려 처리되었습니다." if is_reject else "2차 승인 완료! 최종 결재로 상신되었습니다."
+            return True, msg
     return False, "문서를 찾을 수 없습니다."
 
 def approve_final(doc_id, final_approver, comment, is_reject=False):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
+        for col in APPROVAL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
