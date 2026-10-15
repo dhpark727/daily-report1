@@ -6,7 +6,7 @@ from db_manager import (
 )
 
 def render_readonly_report_card(title_prefix, row_data, key_prefix):
-    """전일 / 전전일 보고서를 읽기 전용 카드로 깔끔하게 렌더링하는 헬퍼 함수"""
+    """전일 / 전전일 보고서를 읽기 전용 카드로 깔끔하게 렌더링하는 헬퍼 함수 (세로 크기 2배 확대)"""
     if row_data is not None:
         r_date = str(row_data.get('report_date', '-'))
         r_status = str(row_data.get('status', '제출완료'))
@@ -15,21 +15,21 @@ def render_readonly_report_card(title_prefix, row_data, key_prefix):
         st.text_area(
             "1. 업무 실적",
             value=str(row_data.get('today_result', '')),
-            height=130,
+            height=260,
             disabled=True,
             key=f"{key_prefix}_res_{r_date}"
         )
         st.text_area(
             "2. 업무 계획",
             value=str(row_data.get('tomorrow_plan', '')),
-            height=95,
+            height=190,
             disabled=True,
             key=f"{key_prefix}_plan_{r_date}"
         )
         st.text_area(
             "3. 특이사항",
             value=str(row_data.get('issue', '')),
-            height=85,
+            height=170,
             disabled=True,
             key=f"{key_prefix}_iss_{r_date}"
         )
@@ -77,7 +77,7 @@ def render_report_portal(user_name, user_dept):
                     st.success(f"{name}님의 업무보고가 성공적으로 제출되었습니다!")
 
     # --------------------------------
-    # 서브탭 2: 내 보고서 관리 (금일 보고 + 전일 보고 나란히 보기 & 수정)
+    # 서브탭 2: 내 보고서 관리 (금일 보고 + 전일 보고 나란히 보기 & 세로 크기 2배 확대)
     # --------------------------------
     with tab_my:
         st.subheader("🔍 내 업무보고 비교 조회 (금일 vs 전일) 및 수정")
@@ -122,9 +122,9 @@ def render_report_portal(user_name, user_dept):
                             st.markdown(f"##### ✍️ 금일(선택일) 보고 내용 수정 ({curr_row['report_date']})")
                             st.caption(f"승인상태: `{curr_status if (curr_status := str(curr_row.get('status', '제출완료'))) else '제출완료'}`")
                             with st.form(key=f"my_edit_form_{selected_id}"):
-                                edit_today = st.text_area("1. 금일 업무 실적", value=str(curr_row.get('today_result', '')), height=130)
-                                edit_tomorrow = st.text_area("2. 명일 업무 계획", value=str(curr_row.get('tomorrow_plan', '')), height=95)
-                                edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=str(curr_row.get('issue', '')), height=85)
+                                edit_today = st.text_area("1. 금일 업무 실적", value=str(curr_row.get('today_result', '')), height=260)
+                                edit_tomorrow = st.text_area("2. 명일 업무 계획", value=str(curr_row.get('tomorrow_plan', '')), height=190)
+                                edit_issue = st.text_area("3. 특이사항 및 협조 요청", value=str(curr_row.get('issue', '')), height=170)
                                 
                                 if curr_row.get('comment'):
                                     st.info(f"💬 **관리자/부서장 피드백**: {curr_row.get('comment')}")
@@ -224,7 +224,7 @@ def render_report_portal(user_name, user_dept):
                     st.rerun()
 
     # --------------------------------
-    # 서브탭 4: 업무 종합 대시보드 (금일 + 전일 + 전전일 3단 비교 및 금일 단독 승인)
+    # 서브탭 4: 업무 종합 대시보드 (금일 + 전일 + 전전일 3단 비교 및 텍스트 창 2배 확대)
     # --------------------------------
     with tab_dash:
         st.subheader("전사 업무 종합 대시보드 & 결재 검토")
@@ -298,14 +298,14 @@ def render_report_portal(user_name, user_dept):
                         st.caption(f"현재 승인상태: `{curr_status}`")
                         
                         with st.form(key=f"approve_form_{target_id}"):
-                            detail_today = st.text_area("1. 금일 업무 실적", value=str(selected_row.get('today_result', '')), height=130)
-                            detail_tomorrow = st.text_area("2. 명일 업무 계획", value=str(selected_row.get('tomorrow_plan', '')), height=95)
-                            detail_issue = st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row.get('issue', '')), height=85)
+                            detail_today = st.text_area("1. 금일 업무 실적", value=str(selected_row.get('today_result', '')), height=260)
+                            detail_tomorrow = st.text_area("2. 명일 업무 계획", value=str(selected_row.get('tomorrow_plan', '')), height=190)
+                            detail_issue = st.text_area("3. 특이사항 및 협조 요청", value=str(selected_row.get('issue', '')), height=170)
                             admin_comment = st.text_area(
                                 "💬 피드백 / 지시사항 (금일 보고서 전용)",
                                 value=str(selected_row.get('comment', '')) if pd.notna(selected_row.get('comment')) else "",
                                 placeholder="금일 보고에 대한 피드백이나 지시사항을 입력하세요.",
-                                height=80
+                                height=160
                             )
                             
                             if st.form_submit_button("✅ 금일 보고 최종 승인 완료", type="primary", use_container_width=True):
