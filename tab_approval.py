@@ -99,7 +99,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                         st.error("품의서 등록 중 오류가 발생했습니다.")
 
     # --------------------------------
-    # 서브탭 2: 결재함 & 내 기안 문서 조회 (기간 필터 + 본인 관련 필터 + 미승인 수정)
+    # 서브탭 2: 결재함 & 내 기안 문서 조회 (최근 기안일시순 정렬 적용)
     # --------------------------------
     with sub2:
         st.subheader("📬 결재함 & 내 관련 문서 조회")
@@ -135,7 +135,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                 if c not in app_df.columns: 
                     app_df[c] = ''
             
-            # 1. 본인 관련 결재만 필터링 (기안자, 1차결재자, 2차결재자, 참고자 또는 총괄 admin)
+            # 1. 본인 관련 결재만 필터링
             def is_related_to_user(row):
                 if user_role == "admin":
                     return True
@@ -167,7 +167,9 @@ def render_approval_tab(user_name, user_dept, user_role):
                 filtered_df['doc_date'] = filtered_df['created_at'].astype(str).str.slice(0, 10)
                 filtered_df = filtered_df[(filtered_df['doc_date'] >= start_d) & (filtered_df['doc_date'] <= end_d)]
 
-            filtered_df = filtered_df.sort_values(by='id', ascending=False).reset_index(drop=True)
+            # 3. 최근 기안일시(created_at) 및 숫자형 ID 기준 최신순(내림차순) 정렬
+            filtered_df['num_id'] = pd.to_numeric(filtered_df['id'], errors='coerce').fillna(0)
+            filtered_df = filtered_df.sort_values(by=['created_at', 'num_id'], ascending=[False, False]).reset_index(drop=True)
 
             if not filtered_df.empty:
                 display_app = filtered_df.rename(columns={
@@ -179,7 +181,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                 show_cols = ['기안일시', '구분', '제목', '기안자', '부서', '예산(원)', '결재상태', '1차결재자', '2차결재자', '참고자', '첨부파일']
                 valid_cols = [c for c in show_cols if c in display_app.columns]
                 
-                st.caption(f"💡 조회된 문서 총 **{len(filtered_df)}건** | 표에서 문서를 클릭하면 하단에 상정된 결재 상세 내용 및 수정/결재 창이 열립니다.")
+                st.caption(f"💡 조회된 문서 총 **{len(filtered_df)}건** (최근 기안일시순 정렬) | 표에서 문서를 클릭하면 하단에 상정된 결재 상세 내용 및 수정/결재 창이 열립니다.")
                 selection = st.dataframe(
                     display_app[valid_cols],
                     use_container_width=True, hide_index=True,
@@ -335,7 +337,7 @@ def render_approval_tab(user_name, user_dept, user_role):
             st.info("상신된 결재 문서가 없습니다.")
 
     # --------------------------------
-    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감
+    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감 (최근 기안일시순 정렬 적용)
     # --------------------------------
     with sub3:
         st.subheader("💳 품의 실행 완료 건 지출 정산 & 증빙 관리")
@@ -343,15 +345,19 @@ def render_approval_tab(user_name, user_dept, user_role):
         approved_docs = app_df[app_df['status'] == '승인완료(집행가능)'].copy() if not app_df.empty else pd.DataFrame()
         
         if not approved_docs.empty:
+            # 정산 목록도 최근 기안일시 및 숫자형 ID 기준 내림차순 정렬
+            approved_docs['num_id'] = pd.to_numeric(approved_docs['id'], errors='coerce').fillna(0)
+            approved_docs = approved_docs.sort_values(by=['created_at', 'num_id'], ascending=[False, False]).reset_index(drop=True)
+
             st.markdown("#### 📋 [정산 대상 품의서 목록]")
-            st.caption("💡 표에서 정산할 품의서 행(Row)을 마우스로 클릭하면 하단 폼이 해당 품의서로 자동 변경됩니다.")
+            st.caption("💡 표에서 정산할 품의서 행(Row)을 마우스로 클릭하면 하단 폼이 해당 품의서로 자동 변경됩니다. (최근 기안일시순)")
             
             display_approved = approved_docs[['created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
                 columns={
-                    'created_at': '기안일', 'title': '품의명', 'drafter_name': '기안자',
+                    'created_at': '기안일시', 'title': '품의명', 'drafter_name': '기안자',
                     'department': '부서', 'budget': '승인예산(원)', 'spent_amount': '실집행액(원)', 'expense_status': '정산상태'
                 }
-            ).reset_index(drop=True)
+            )
             
             selection = st.dataframe(
                 display_approved,
