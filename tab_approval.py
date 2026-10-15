@@ -24,6 +24,40 @@ def render_file_preview(file_obj, key_prefix):
         key=f"{key_prefix}_{file_name}"
     )
 
+def render_past_doc_detail(past_doc, key_prefix="past"):
+    """연관된 과거 결재 문서의 상세 내역을 화면에 렌더링"""
+    p_id = str(past_doc.get('id', ''))
+    st.markdown(f"##### 📌 [문서번호 #{p_id}] [{past_doc.get('doc_type')}] {past_doc.get('title')}")
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    pc1.write(f"**기안자**: {past_doc.get('drafter_name')} ({past_doc.get('department')})")
+    pc2.write(f"**기안일시**: {past_doc.get('created_at')}")
+    pc3.write(f"**승인예산**: {past_doc.get('budget')} 원")
+    pc4.write(f"**결재상태**: `{past_doc.get('status')}`")
+    
+    st.text_area(
+        "과거 품의 상세 내용",
+        value=str(past_doc.get('content', '')),
+        height=120,
+        disabled=True,
+        key=f"{key_prefix}_content_{p_id}"
+    )
+    
+    # 과거 결재 의견 및 지출 정산 내역
+    if past_doc.get('manager1_comment'):
+        st.caption(f"🗣️ **1차 결재자({past_doc.get('manager1_name')}) 의견**: {past_doc.get('manager1_comment')}")
+    if past_doc.get('manager2_comment'):
+        st.caption(f"🗣️ **2차 결재자({past_doc.get('manager2_name')}) 의견**: {past_doc.get('manager2_comment')}")
+    if past_doc.get('final_comment'):
+        st.caption(f"👑 **최종 결재자({past_doc.get('final_approver')}) 의견**: {past_doc.get('final_comment')}")
+    if str(past_doc.get('spent_amount', '0')) not in ['0', '']:
+        st.caption(f"💰 **실집행 금액**: {past_doc.get('spent_amount')} 원 ({past_doc.get('expense_status')}) | **내역**: {past_doc.get('expense_details', '-')}")
+
+    att_dict = st.session_state.get("approval_attachments", {})
+    if p_id in att_dict:
+        render_file_preview(att_dict[p_id], f"{key_prefix}_att_{p_id}")
+    elif past_doc.get('attachment_name'):
+        st.caption(f"📎 과거 첨부파일명: {past_doc.get('attachment_name')}")
+
 def render_approval_tab(user_name, user_dept, user_role):
     # 세션 상태 안전 초기화
     if "expense_receipts" not in st.session_state:
@@ -44,8 +78,23 @@ def render_approval_tab(user_name, user_dept, user_role):
     if not all_emp_names: 
         all_emp_names = ["기본관리자"]
 
+    app_df = get_data("approvals")
+    if not app_df.empty:
+        for c in ['target_manager1', 'target_manager2', 'cc_users', 'attachment_name', 'related_doc_id']:
+            if c not in app_df.columns:
+                app_df[c] = ''
+        app_df['num_id'] = pd.to_numeric(app_df['id'], errors='coerce').fillna(0)
+        app_df = app_df.sort_values(by=['created_at', 'num_id'], ascending=[False, False]).reset_index(drop=True)
+
+    # 과거 결재 선택 옵션 구성
+    past_doc_options = {"선택 안 함 (연관 과거 결재 없음)": ""}
+    if not app_df.empty:
+        for _, r in app_df.iterrows():
+            label = f"[#{r['id']}] {r['title']} ({r['drafter_name']} | {str(r['created_at'])[:10]} | {r['status']})"
+            past_doc_options[label] = str(r['id'])
+
     # --------------------------------
-    # 서브탭 1: 신규 품의서 기안 (파일 업로드 포함)
+    # 서브탭 1: 신규 품의서 기안 (과거 결재 참조 선택 및 즉시 표시 포함)
     # --------------------------------
     with sub1:
         st.subheader("새로운 품의서 작성")
@@ -54,18 +103,37 @@ def render_approval_tab(user_name, user_dept, user_role):
             st.success(st.session_state["approval_submitted_msg"])
             st.session_state["approval_submitted_msg"] = None
 
+        # 폼 외부에서 연관 과거 결재를 선택하면 즉시 아래에 내용을 표시
+        st.markdown("##### 🔗 연관 과거 결재 문서 연결 (선택사항)")
+        selected_past_label = st.selectbox(
+            "과거에 올렸던 결재와 연관성이 있다면 아래에서 선택하세요. 선택 시 화면에 과거 결재 내용이 즉시 표시됩니다.",
+            options=list(past_doc_options.keys()),
+            key="new_draft_related_select"
+        )
+        selected_related_id = past_doc_options[selected_past_label]
+
+        if selected_related_id and not app_df.empty:
+            matched_past = app_df[app_df['id'].astype(str) == selected_related_id]
+            if not matched_past.empty:
+                with st.expander("📂 선택한 연관 과거 결재 내용 확인 (클릭하여 접기/펼치기)", expanded=True):
+                    render_past_doc_detail(matched_past.iloc[0], key_prefix="draft_preview")
+
+        st.markdown("---")
+
         with st.form("new_approval_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
                 doc_type = st.selectbox("품의 구분", ["구매/지출 품의", "프로젝트 실행 품의", "출장/외근 품의", "일반 업무 품의"])
-                title = st.text_input("품의 제목", placeholder="예: [환경사업부] 측정 장비 구매 건")
+                title = st.text_input("품의 제목", placeholder="예: [환경사업부] 측정 장비 추가 구매 건")
                 budget = st.text_input("예상 소요 예산(원)", value="0", placeholder="숫자만 입력 (예: 1500000)")
             with col2:
                 target_mgr1 = st.selectbox("🎯 1차 결재자 (중간관리자 / 필수)", all_emp_names)
                 target_mgr2 = st.selectbox("🎯 2차 결재자 (선택 사항)", ["선택 안 함"] + [name for name in all_emp_names if name != target_mgr1])
                 cc_selected = st.multiselect("👥 참고자 (열람 공유)", [name for name in all_emp_names if name not in [target_mgr1, target_mgr2]])
                 
-            st.caption(f"기안자: **{user_name}** ({user_dept}) | 1차: **{target_mgr1}** | 2차: **{target_mgr2}** | 참고: **{', '.join(cc_selected) if cc_selected else '없음'}**")
+            rel_info_txt = f" | 🔗 연관문서: **#{selected_related_id}**" if selected_related_id else ""
+            st.caption(f"기안자: **{user_name}** ({user_dept}) | 1차: **{target_mgr1}** | 2차: **{target_mgr2}** | 참고: **{', '.join(cc_selected) if cc_selected else '없음'}**{rel_info_txt}")
+            
             content = st.text_area(
                 "품의 내용 및 목적 (실행 계획)", 
                 placeholder="1. 추진 목적:\n2. 세부 품목 및 단가:\n3. 기대 효과:\n4. 실행 예정일:", 
@@ -86,7 +154,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                     att_name = attached_file.name if attached_file is not None else ""
                     success, new_doc_id = insert_approval_doc(
                         doc_type, title, user_name, user_dept, budget,
-                        target_mgr1, mgr2_val, cc_selected, content, att_name
+                        target_mgr1, mgr2_val, cc_selected, content, att_name, selected_related_id
                     )
                     if success:
                         if attached_file is not None:
@@ -99,7 +167,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                         st.error("품의서 등록 중 오류가 발생했습니다.")
 
     # --------------------------------
-    # 서브탭 2: 결재함 & 내 기안 문서 조회 (최근 기안일시순 정렬 적용)
+    # 서브탭 2: 결재함 & 내 기안 문서 조회 (연관 과거 결재 클릭 열람 포함)
     # --------------------------------
     with sub2:
         st.subheader("📬 결재함 & 내 관련 문서 조회")
@@ -107,7 +175,6 @@ def render_approval_tab(user_name, user_dept, user_role):
         today_kst = get_kst_date()
         one_month_ago = today_kst - timedelta(days=30)
         
-        # 상단 조회 필터 (기본 1개월)
         f_col1, f_col2, f_col3 = st.columns([2, 1.5, 1.5])
         with f_col1:
             date_filter = st.date_input(
@@ -128,14 +195,7 @@ def render_approval_tab(user_name, user_dept, user_role):
                 key="app_status_filter"
             )
 
-        app_df = get_data("approvals")
-        
         if not app_df.empty:
-            for c in ['target_manager1', 'target_manager2', 'cc_users', 'attachment_name']:
-                if c not in app_df.columns: 
-                    app_df[c] = ''
-            
-            # 1. 본인 관련 결재만 필터링
             def is_related_to_user(row):
                 if user_role == "admin":
                     return True
@@ -147,7 +207,6 @@ def render_approval_tab(user_name, user_dept, user_role):
 
             filtered_df = app_df[app_df.apply(is_related_to_user, axis=1)].copy()
             
-            # 세부 구분 필터 적용
             if relation_filter == "내가 기안한 문서":
                 filtered_df = filtered_df[filtered_df['drafter_name'] == user_name]
             elif relation_filter == "내가 결재할 문서(1/2차)":
@@ -155,33 +214,32 @@ def render_approval_tab(user_name, user_dept, user_role):
             elif relation_filter == "내가 참고자인 문서":
                 filtered_df = filtered_df[filtered_df['cc_users'].apply(lambda x: user_name in [i.strip() for i in str(x).split(',')])]
 
-            # 결재 상태 필터 적용
             if status_filter == "미승인(결재대기/반려)":
                 filtered_df = filtered_df[filtered_df['status'] != '승인완료(집행가능)']
             elif status_filter == "승인완료(집행가능)":
                 filtered_df = filtered_df[filtered_df['status'] == '승인완료(집행가능)']
 
-            # 2. 기간 필터링 (created_at 앞 10자리 YYYY-MM-DD 기준)
             if isinstance(date_filter, (tuple, list)) and len(date_filter) == 2:
                 start_d, end_d = str(date_filter[0]), str(date_filter[1])
                 filtered_df['doc_date'] = filtered_df['created_at'].astype(str).str.slice(0, 10)
                 filtered_df = filtered_df[(filtered_df['doc_date'] >= start_d) & (filtered_df['doc_date'] <= end_d)]
 
-            # 3. 최근 기안일시(created_at) 및 숫자형 ID 기준 최신순(내림차순) 정렬
-            filtered_df['num_id'] = pd.to_numeric(filtered_df['id'], errors='coerce').fillna(0)
             filtered_df = filtered_df.sort_values(by=['created_at', 'num_id'], ascending=[False, False]).reset_index(drop=True)
 
             if not filtered_df.empty:
+                # 연관문서 표기 포맷팅
+                filtered_df['related_display'] = filtered_df['related_doc_id'].apply(lambda x: f"#{x}" if str(x).strip() != "" else "-")
+                
                 display_app = filtered_df.rename(columns={
-                    'created_at': '기안일시', 'doc_type': '구분', 'title': '제목',
+                    'id': '문서번호', 'created_at': '기안일시', 'doc_type': '구분', 'title': '제목',
                     'drafter_name': '기안자', 'department': '부서', 'budget': '예산(원)',
                     'status': '결재상태', 'target_manager1': '1차결재자', 'target_manager2': '2차결재자',
-                    'cc_users': '참고자', 'attachment_name': '첨부파일'
+                    'cc_users': '참고자', 'related_display': '연관결재', 'attachment_name': '첨부파일'
                 })
-                show_cols = ['기안일시', '구분', '제목', '기안자', '부서', '예산(원)', '결재상태', '1차결재자', '2차결재자', '참고자', '첨부파일']
+                show_cols = ['문서번호', '기안일시', '구분', '제목', '기안자', '부서', '예산(원)', '결재상태', '1차결재자', '2차결재자', '연관결재', '첨부파일']
                 valid_cols = [c for c in show_cols if c in display_app.columns]
                 
-                st.caption(f"💡 조회된 문서 총 **{len(filtered_df)}건** (최근 기안일시순 정렬) | 표에서 문서를 클릭하면 하단에 상정된 결재 상세 내용 및 수정/결재 창이 열립니다.")
+                st.caption(f"💡 조회된 문서 총 **{len(filtered_df)}건** (최근 기안일시순 정렬) | 표에서 문서를 클릭하면 하단에 결재 상세 내용 및 연관 과거 결재가 표시됩니다.")
                 selection = st.dataframe(
                     display_app[valid_cols],
                     use_container_width=True, hide_index=True,
@@ -198,9 +256,10 @@ def render_approval_tab(user_name, user_dept, user_role):
                     cc_list = str(doc.get('cc_users', ''))
                     curr_status = str(doc.get('status', ''))
                     att_name = str(doc.get('attachment_name', ''))
+                    rel_doc_id = str(doc.get('related_doc_id', '')).strip()
                     
                     st.markdown("---")
-                    st.subheader(f"📄 [{doc.get('doc_type')}] {doc.get('title')}")
+                    st.subheader(f"📄 [문서번호 #{doc_id}] [{doc.get('doc_type')}] {doc.get('title')}")
                     
                     c1, c2, c3, c4 = st.columns(4)
                     c1.write(f"**기안자**: {drafter} ({doc.get('department')})")
@@ -209,6 +268,16 @@ def render_approval_tab(user_name, user_dept, user_role):
                     c4.write(f"**결재상태**: `{curr_status}`")
                     st.caption(f"🎯 **결재선**: 1차({target_m1}) ➔ 2차({target_m2}) ➔ 최종(대표) | 👥 **참고자(CC)**: {cc_list}")
                     
+                    # 🔗 연관된 과거 결재 내역 클릭하여 열람하기
+                    if rel_doc_id != "":
+                        matched_rel = app_df[app_df['id'].astype(str) == rel_doc_id]
+                        if not matched_rel.empty:
+                            r_doc = matched_rel.iloc[0]
+                            with st.expander(f"🔗 연관된 과거 결재 내역 확인하기: [#{rel_doc_id}] {r_doc.get('title')} (클릭하여 상세 열람)", expanded=False):
+                                render_past_doc_detail(r_doc, key_prefix=f"rel_view_{doc_id}")
+                        else:
+                            st.caption(f"🔗 연관 문서 번호: #{rel_doc_id} (삭제되었거나 찾을 수 없음)")
+
                     # 첨부파일 표시 및 다운로드
                     att_dict = st.session_state.get("approval_attachments", {})
                     if doc_id in att_dict:
@@ -230,13 +299,25 @@ def render_approval_tab(user_name, user_dept, user_role):
                     is_unapproved = curr_status != '승인완료(집행가능)'
                     if user_name == drafter and is_unapproved:
                         st.markdown("#### ✏️ 내 기안 문서 수정 (미승인 상태)")
-                        st.caption("아직 최종 승인이 나지 않은 상태이므로 기안 내용을 수정할 수 있습니다.")
+                        st.caption("아직 최종 승인이 나지 않은 상태이므로 기안 내용 및 연관 결재 문서를 수정할 수 있습니다.")
                         
                         all_mgr_candidates = [info['name'] for info in users_dict.values() if info['name'] != user_name]
                         if not all_mgr_candidates:
                             all_mgr_candidates = ["기본관리자"]
                             
+                        # 자기 자신을 제외한 과거 문서 선택지
+                        edit_rel_options = {"선택 안 함 (연관 과거 결재 없음)": ""}
+                        for k, v in past_doc_options.items():
+                            if v != "" and v != doc_id:
+                                edit_rel_options[k] = v
+                        curr_rel_index = list(edit_rel_options.values()).index(rel_doc_id) if rel_doc_id in edit_rel_options.values() else 0
+
                         with st.form(key=f"edit_approval_form_{doc_id}"):
+                            edit_rel_label = st.selectbox(
+                                "🔗 연관 과거 결재 문서 변경",
+                                options=list(edit_rel_options.keys()),
+                                index=curr_rel_index
+                            )
                             ec1, ec2 = st.columns(2)
                             with ec1:
                                 doc_types = ["구매/지출 품의", "프로젝트 실행 품의", "출장/외근 품의", "일반 업무 품의"]
@@ -266,9 +347,10 @@ def render_approval_tab(user_name, user_dept, user_role):
                             if st.form_submit_button("💾 기안 내용 수정 저장", type="primary", use_container_width=True):
                                 m2_clean = "" if edit_m2 == "선택 안 함" else edit_m2
                                 new_att_name = new_att.name if new_att is not None else None
+                                new_rel_id = edit_rel_options[edit_rel_label]
                                 ok, msg = update_approval_doc(
                                     doc_id, edit_type, edit_title, edit_budget,
-                                    edit_m1, m2_clean, edit_cc, edit_content, new_att_name
+                                    edit_m1, m2_clean, edit_cc, edit_content, new_att_name, new_rel_id
                                 )
                                 if ok:
                                     if new_att is not None:
@@ -279,7 +361,6 @@ def render_approval_tab(user_name, user_dept, user_role):
                                 else:
                                     st.error(msg)
                     else:
-                        # 기안자가 아니거나 이미 승인된 경우 읽기 전용으로 품의 내용 표시
                         st.text_area("품의 상세 내용", value=doc.get('content', ''), height=150, disabled=True)
 
                     # ------------------------------------------------
@@ -337,24 +418,22 @@ def render_approval_tab(user_name, user_dept, user_role):
             st.info("상신된 결재 문서가 없습니다.")
 
     # --------------------------------
-    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감 (최근 기안일시순 정렬 적용)
+    # 서브탭 3: 실행 후 지출 정산 등록 & 최종 마감
     # --------------------------------
     with sub3:
         st.subheader("💳 품의 실행 완료 건 지출 정산 & 증빙 관리")
-        app_df = get_data("approvals")
         approved_docs = app_df[app_df['status'] == '승인완료(집행가능)'].copy() if not app_df.empty else pd.DataFrame()
         
         if not approved_docs.empty:
-            # 정산 목록도 최근 기안일시 및 숫자형 ID 기준 내림차순 정렬
             approved_docs['num_id'] = pd.to_numeric(approved_docs['id'], errors='coerce').fillna(0)
             approved_docs = approved_docs.sort_values(by=['created_at', 'num_id'], ascending=[False, False]).reset_index(drop=True)
 
             st.markdown("#### 📋 [정산 대상 품의서 목록]")
             st.caption("💡 표에서 정산할 품의서 행(Row)을 마우스로 클릭하면 하단 폼이 해당 품의서로 자동 변경됩니다. (최근 기안일시순)")
             
-            display_approved = approved_docs[['created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
+            display_approved = approved_docs[['id', 'created_at', 'title', 'drafter_name', 'department', 'budget', 'spent_amount', 'expense_status']].rename(
                 columns={
-                    'created_at': '기안일시', 'title': '품의명', 'drafter_name': '기안자',
+                    'id': '문서번호', 'created_at': '기안일시', 'title': '품의명', 'drafter_name': '기안자',
                     'department': '부서', 'budget': '승인예산(원)', 'spent_amount': '실집행액(원)', 'expense_status': '정산상태'
                 }
             )
@@ -370,7 +449,7 @@ def render_approval_tab(user_name, user_dept, user_role):
             t_id = str(t_row['id'])
             
             st.markdown("---")
-            st.subheader(f"📝 [{t_row.get('title')}] 실 지출내역 및 증빙 관리")
+            st.subheader(f"📝 [문서번호 #{t_id}] [{t_row.get('title')}] 실 지출내역 및 증빙 관리")
             
             c_info1, c_info2, c_info3 = st.columns(3)
             c_info1.info(f"**기안자**: {t_row.get('drafter_name')} ({t_row.get('department')})")
