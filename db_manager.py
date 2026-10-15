@@ -17,6 +17,14 @@ def get_kst_date():
 # --------------------------------
 # 1. 구글 스프레드시트 연동 및 캐싱
 # --------------------------------
+APPROVAL_COLS = [
+    'id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department',
+    'budget', 'content', 'status', 'target_manager1', 'target_manager2',
+    'cc_users', 'attachment_name', 'manager1_name', 'manager1_comment',
+    'manager2_name', 'manager2_comment', 'final_approver', 'final_comment',
+    'spent_amount', 'expense_details', 'expense_status'
+]
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_sheet_data(worksheet_name):
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -33,7 +41,7 @@ def fetch_sheet_data(worksheet_name):
             elif worksheet_name == "live_attendance":
                 df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
             elif worksheet_name == "approvals":
-                df = pd.DataFrame(columns=['id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department', 'budget', 'content', 'status', 'target_manager1', 'target_manager2', 'cc_users', 'manager1_name', 'manager1_comment', 'manager2_name', 'manager2_comment', 'final_approver', 'final_comment', 'spent_amount', 'expense_details', 'expense_status'])
+                df = pd.DataFrame(columns=APPROVAL_COLS)
         else:
             df = df.fillna("")
             for col in df.columns:
@@ -54,7 +62,7 @@ def get_data(worksheet_name):
         elif worksheet_name == "live_attendance":
             return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
         elif worksheet_name == "approvals":
-            return pd.DataFrame(columns=['id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department', 'budget', 'content', 'status', 'target_manager1', 'target_manager2', 'cc_users', 'manager1_name', 'manager1_comment', 'manager2_name', 'manager2_comment', 'final_approver', 'final_comment', 'spent_amount', 'expense_details', 'expense_status'])
+            return pd.DataFrame(columns=APPROVAL_COLS)
     return df.copy()
 
 def save_data(worksheet_name, df):
@@ -260,10 +268,13 @@ def time_to_minutes(t):
         return 0
 
 # --------------------------------
-# 5. 전자결재 & 지출정산 관리
+# 5. 전자결재 & 지출정산 관리 (첨부파일 및 기안 수정 포함)
 # --------------------------------
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, cc_users, content):
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, cc_users, content, attachment_name=""):
     df = get_data("approvals")
+    for col in APPROVAL_COLS:
+        if col not in df.columns:
+            df[col] = ""
     new_id = generate_new_id(df)
     now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
     new_row = pd.DataFrame([{
@@ -273,13 +284,42 @@ def insert_approval_doc(doc_type, title, drafter_name, department, budget, targe
         'target_manager1': str(target_mgr1),
         'target_manager2': str(target_mgr2) if target_mgr2 else "없음",
         'cc_users': str(", ".join(cc_users)) if cc_users else "없음",
+        'attachment_name': str(attachment_name),
         'manager1_name': '', 'manager1_comment': '',
         'manager2_name': '', 'manager2_comment': '',
         'final_approver': '', 'final_comment': '',
         'spent_amount': '0', 'expense_details': '', 'expense_status': '미집행'
     }])
     save_data("approvals", pd.concat([df, new_row], ignore_index=True))
-    return True, f"[{title}] 품의서가 상신되었습니다."
+    return True, new_id
+
+def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr2, cc_users, content, attachment_name=None):
+    """승인 완료 전 기안자가 본인 품의서 내용 수정"""
+    df = get_data("approvals")
+    if not df.empty and 'id' in df.columns:
+        for col in APPROVAL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
+        df['id'] = df['id'].astype(str)
+        idx = df[df['id'] == str(doc_id)].index
+        if len(idx) > 0:
+            t_idx = idx[0]
+            df.at[t_idx, 'doc_type'] = str(doc_type)
+            df.at[t_idx, 'title'] = str(title)
+            df.at[t_idx, 'budget'] = str(budget)
+            df.at[t_idx, 'target_manager1'] = str(target_mgr1)
+            df.at[t_idx, 'target_manager2'] = str(target_mgr2) if target_mgr2 else "없음"
+            df.at[t_idx, 'cc_users'] = str(", ".join(cc_users)) if cc_users else "없음"
+            df.at[t_idx, 'content'] = str(content)
+            if attachment_name:
+                df.at[t_idx, 'attachment_name'] = str(attachment_name)
+            # 반려 상태였던 문서를 수정하면 다시 1차 결재 대기로 복구
+            if '반려' in str(df.at[t_idx, 'status']):
+                df.at[t_idx, 'status'] = '1차결재대기'
+            save_data("approvals", df)
+            return True, "품의서 내용이 수정되었습니다."
+    return False, "문서를 찾을 수 없습니다."
 
 def approve_step1(doc_id, manager_name, comment, is_reject=False):
     df = get_data("approvals")
