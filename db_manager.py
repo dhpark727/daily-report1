@@ -132,9 +132,16 @@ def get_data(worksheet_name):
 def save_data(worksheet_name, df):
     conn = st.connection("gsheets", type=GSheetsConnection)
     df = df.fillna("")
-    conn.update(worksheet=worksheet_name, data=df)
+    try:
+        conn.update(worksheet=worksheet_name, data=df)
+    except Exception:
+        # 시트(탭)가 존재하지 않을 경우 자동으로 시트를 새로 생성한 뒤 데이터 저장
+        try:
+            conn.create(worksheet=worksheet_name, data=df)
+        except Exception as e:
+            st.error(f"구글 시트 저장 오류 ({worksheet_name}): {e}")
     st.cache_data.clear()
-
+    
 def generate_new_id(df):
     if df.empty or 'id' not in df.columns:
         return "1"
