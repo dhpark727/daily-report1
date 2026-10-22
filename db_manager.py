@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
 from streamlit_gsheets import GSheetsConnection
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 # --------------------------------
 # 한국 표준시 (KST) 설정
@@ -15,17 +18,71 @@ def get_kst_date():
     return get_kst_now().date()
 
 # --------------------------------
+# 0. 구글 드라이브 파일 업로드 함수
+# --------------------------------
+def upload_file_to_drive(uploaded_file, prefix="DOC"):
+    if uploaded_file is None:
+        return "", ""
+    try:
+        gsheets_secret = dict(st.secrets["connections"]["gsheets"])
+        folder_id = gsheets_secret.get("drive_folder_id", "").strip()
+        
+        scopes = ['https://www.googleapis.com/auth/drive']
+        creds = service_account.Credentials.from_service_account_info(gsheets_secret, scopes=scopes)
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        now_stamp = get_kst_now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = f"[{prefix}_{now_stamp}] {uploaded_file.name}"
+        
+        file_metadata = {'name': safe_filename}
+        if folder_id:
+            file_metadata['parents'] = [folder_id]
+            
+        uploaded_file.seek(0)
+        media = MediaIoBaseUpload(
+            uploaded_file,
+            mimetype=uploaded_file.type if uploaded_file.type else 'application/octet-stream',
+            resumable=True
+        )
+        
+        created_file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink',
+            supportsAllDrives=True
+        ).execute()
+        
+        file_id = created_file.get('id')
+        web_link = created_file.get('webViewLink', f"https://drive.google.com/file/d/{file_id}/view")
+        
+        try:
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'},
+                supportsAllDrives=True
+            ).execute()
+        except Exception:
+            pass
+            
+        return uploaded_file.name, web_link
+    except Exception as e:
+        st.error(f"구글 드라이브 파일 업로드 오류: {e}")
+        return uploaded_file.name, ""
+
+# --------------------------------
 # 1. 구글 스프레드시트 연동 및 캐싱
 # --------------------------------
 APPROVAL_COLS = [
     'id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department',
     'budget', 'content', 'status', 'target_manager1', 'target_manager2',
-    'final_approval_req', 'cc_users', 'attachment_name', 'related_doc_id',
-    'manager1_name', 'manager1_comment', 'manager2_name', 'manager2_comment',
-    'final_approver', 'final_comment', 'spent_amount', 'expense_details', 'expense_status'
+    'final_approval_req', 'cc_users', 'attachment_name', 'attachment_url',
+    'related_doc_id', 'manager1_name', 'manager1_comment', 'manager2_name',
+    'manager2_comment', 'final_approver', 'final_comment', 'spent_amount',
+    'expense_details', 'expense_status', 'receipt_name', 'receipt_url'
 ]
 
 USER_COLS = ['username', 'password', 'name', 'role', 'department', 'position']
+ARCHIVE_COLS = ['id', 'title', 'created_at', 'author', 'file_url', 'records_json']
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_sheet_data(worksheet_name):
@@ -44,6 +101,8 @@ def fetch_sheet_data(worksheet_name):
                 df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
             elif worksheet_name == "approvals":
                 df = pd.DataFrame(columns=APPROVAL_COLS)
+            elif worksheet_name == "monthly_att_archives":
+                df = pd.DataFrame(columns=ARCHIVE_COLS)
         else:
             df = df.fillna("")
             for col in df.columns:
@@ -65,6 +124,8 @@ def get_data(worksheet_name):
             return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
         elif worksheet_name == "approvals":
             return pd.DataFrame(columns=APPROVAL_COLS)
+        elif worksheet_name == "monthly_att_archives":
+            return pd.DataFrame(columns=ARCHIVE_COLS)
     return df.copy()
 
 def save_data(worksheet_name, df):
@@ -80,7 +141,226 @@ def generate_new_id(df):
     return str(int(max_id) + 1 if pd.notna(max_id) else 1)
 
 # --------------------------------
-# 2. 사용자 계정 관리 (직책 position 포함)
+# 2. 사용자 계정 관리
+# --------------------------------
+def get_user_credentials():
+    users_df = get_data("users")
+    credentials = {
+        "admin": {
+            "password": "admin1234",
+            "name": "기본관리자",
+            "role": "admin",
+            "department": "총무부",
+            "position": "대표이사"
+        }
+    }
+    if not users_df.empty and 'username' in users_df.columns:
+        for _, row in users_df.iterrows():
+            if pd.isna(row.get('username')): 
+                continue
+            u_id = str(row['username']).strip()
+            if u_id:
+                pos_val = str(row.get('position', '')).strip()
+                if not pos_val:
+                    pos_val = "대표이사" if str(row.get('role', '')).strip() == "admin" else "사원"
+                credentials[u_id] = {
+                    "password": str(row.get('password', '')).strip(),
+                    "name": str(row.get('name', u_id)).strip(),
+                    "role": str(row.get('role', 'user')).strip(),
+                    "department": str(row.get('department', '환경사업부')).strip(),
+                    "position": pos_val
+                }
+    return credentials
+
+def add_user(username, password, name, role="user", department="환경사업부", position="사원"):
+    users_df = get_data("users")
+    for col in USER_COLS:
+        if col not in users_df.columns:
+            users_df[col] = ""
+    if not users_df.empty and 'username' in users_df.columns:
+        if username in users_df['username'].astype(str).values:
+            return False, "이미 존재하는 아이디입니다."
+    new_user = pd.DataFrame([{
+        'username': str(username),
+        'password': str(password),
+        'name': str(name),
+        'role': str요청하신 대로 **[월간 근태 엑셀 파일 심층 분석]** 탭에서 엑셀 파일을 업로드하면 기본 통계 외에 **다각도의 심층 분석(요일별 패턴, 워라밸 및 번아웃 위험도, 일평균 근무시간, 근태 성실도 등)**을 추가로 제공하고, **분석된 결과를 구글 스프레드시트(`monthly_att_archive`)에 영구 저장하여 언제든 목록에서 선택해 다시 열람**할 수 있도록 업그레이드했습니다.
+
+---
+
+### ✨ 주요 추가 및 개선 기능
+
+1. **5대 심층 분석 리포트 추가**:
+   * **워라밸 & 번아웃 위험군 진단**: 월간 연장근무 시간 및 일평균 근무시간을 분석하여 과로/번아웃 주의 인원을 자동 감지합니다.
+   * **근태 성실도 (출근율/정시출근율) 분석**: 기록일수 대비 정상출근 비율(%)과 지각/조퇴 빈도를 결합해 성실도 지표를 산출합니다.
+   * **요일별 근무 패턴 분석**: 월~금 요일별 평균 근무시간, 연장근무 집중 요일, 지각 다발 요일을 표와 차트로 시각화합니다.
+   * **직원별 근무시간 비교 차트**: 직원별 총 근무시간 및 연장근무 시간을 직관적인 막대그래프로 비교합니다.
+2. **월간 분석 결과 영구 아카이빙 및 재열람 (`monthly_att_archive` 시트 연동)**:
+   * 분석된 월간 데이터를 **`💾 현재 월간 분석 결과 아카이브에 저장하기`** 버튼 하나로 구글 시트에 영구 보관할 수 있습니다. (예: `2026년 07월 정기 근태분석`)
+   * 엑셀 파일을 다시 업로드할 필요 없이, 상단 **`📂 저장된 월간 근태 분석 아카이브 불러오기`** 목록에서 과거 월별 기록을 선택하면 당시의 기본 통계, 심층 분석, 개인별 상세 타임라인까지 즉시 복원하여 보여줍니다.
+
+---
+
+### 📊 1단계: 구글 스프레드시트에 `monthly_att_archive` 시트 추가
+
+구글 드라이브의 **`일일업무보고_DB`** 스프레드시트에 월간 분석 보관용 시트(탭)를 하나 추가해 주세요.
+
+1. 스프레드시트 하단 **`+`** 버튼을 눌러 새 시트를 만들고 이름을 **`monthly_att_archive`** 로 변경합니다.
+2. **1행(A1부터 F1까지)** 헤더를 아래와 같이 입력합니다:
+   * `id` | `month_label` | `saved_at` | `saved_by` | `summary_json` | `raw_json`
+
+---
+
+### 🛠️ 2단계: `db_manager.py` 수정 (아카이브 저장/불러오기 함수 추가)
+
+`db_manager.py` 파일에 `monthly_att_archive` 시트 연동 및 저장/삭제 함수를 추가한 전체 코드입니다. GitHub의 **`db_manager.py`**에 덮어씌워 주세요.
+
+```python
+import streamlit as st
+import pandas as pd
+import json
+from datetime import date, datetime, timedelta, timezone
+from streamlit_gsheets import GSheetsConnection
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+
+# --------------------------------
+# 한국 표준시 (KST) 설정
+# --------------------------------
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now():
+    return datetime.now(KST)
+
+def get_kst_date():
+    return get_kst_now().date()
+
+# --------------------------------
+# 0. 구글 드라이브 파일 업로드 함수
+# --------------------------------
+def upload_file_to_drive(uploaded_file, prefix="DOC"):
+    if uploaded_file is None:
+        return "", ""
+    try:
+        gsheets_secret = dict(st.secrets["connections"]["gsheets"])
+        folder_id = gsheets_secret.get("drive_folder_id", "").strip()
+        
+        scopes = ['[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)']
+        creds = service_account.Credentials.from_service_account_info(gsheets_secret, scopes=scopes)
+        drive_service = build('drive', 'v3', credentials=creds)
+        
+        now_stamp = get_kst_now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = f"[{prefix}_{now_stamp}] {uploaded_file.name}"
+        
+        file_metadata = {'name': safe_filename}
+        if folder_id:
+            file_metadata['parents'] = [folder_id]
+            
+        uploaded_file.seek(0)
+        media = MediaIoBaseUpload(
+            uploaded_file,
+            mimetype=uploaded_file.type if uploaded_file.type else 'application/octet-stream',
+            resumable=True
+        )
+        
+        created_file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink',
+            supportsAllDrives=True
+        ).execute()
+        
+        file_id = created_file.get('id')
+        web_link = created_file.get('webViewLink', f"[https://drive.google.com/file/d/](https://drive.google.com/file/d/){file_id}/view")
+        
+        try:
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'},
+                supportsAllDrives=True
+            ).execute()
+        except Exception:
+            pass
+            
+        return uploaded_file.name, web_link
+    except Exception as e:
+        st.error(f"구글 드라이브 파일 업로드 오류: {e}")
+        return uploaded_file.name, ""
+
+# --------------------------------
+# 1. 구글 스프레드시트 연동 및 캐싱
+# --------------------------------
+APPROVAL_COLS = [
+    'id', 'created_at', 'doc_type', 'title', 'drafter_name', 'department',
+    'budget', 'content', 'status', 'target_manager1', 'target_manager2',
+    'final_approval_req', 'cc_users', 'attachment_name', 'attachment_url',
+    'related_doc_id', 'manager1_name', 'manager1_comment', 'manager2_name',
+    'manager2_comment', 'final_approver', 'final_comment', 'spent_amount',
+    'expense_details', 'expense_status', 'receipt_name', 'receipt_url'
+]
+
+USER_COLS = ['username', 'password', 'name', 'role', 'department', 'position']
+ARCHIVE_COLS = ['id', 'month_label', 'saved_at', 'saved_by', 'summary_json', 'raw_json']
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_sheet_data(worksheet_name):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    try:
+        df = conn.read(worksheet=worksheet_name, ttl=60)
+        df = df.dropna(how="all")
+        if df.empty:
+            if worksheet_name == "reports":
+                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue', 'status', 'comment'])
+            elif worksheet_name == "consolidated_reports":
+                df = pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
+            elif worksheet_name == "users":
+                df = pd.DataFrame(columns=USER_COLS)
+            elif worksheet_name == "live_attendance":
+                df = pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+            elif worksheet_name == "approvals":
+                df = pd.DataFrame(columns=APPROVAL_COLS)
+            elif worksheet_name == "monthly_att_archive":
+                df = pd.DataFrame(columns=ARCHIVE_COLS)
+        else:
+            df = df.fillna("")
+            for col in df.columns:
+                df[col] = df[col].astype(str)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_data(worksheet_name):
+    df = fetch_sheet_data(worksheet_name)
+    if df.empty:
+        if worksheet_name == "reports":
+            return pd.DataFrame(columns=['id', 'report_date', 'department', 'name', 'today_result', 'tomorrow_plan', 'issue', 'status', 'comment'])
+        elif worksheet_name == "consolidated_reports":
+            return pd.DataFrame(columns=['id', 'report_date', 'department', 'manager_name', 'today_result', 'tomorrow_plan', 'issue'])
+        elif worksheet_name == "users":
+            return pd.DataFrame(columns=USER_COLS)
+        elif worksheet_name == "live_attendance":
+            return pd.DataFrame(columns=['id', 'date', 'name', 'department', 'type', 'check_in', 'check_out', 'note'])
+        elif worksheet_name == "approvals":
+            return pd.DataFrame(columns=APPROVAL_COLS)
+        elif worksheet_name == "monthly_att_archive":
+            return pd.DataFrame(columns=ARCHIVE_COLS)
+    return df.copy()
+
+def save_data(worksheet_name, df):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    df = df.fillna("")
+    conn.update(worksheet=worksheet_name, data=df)
+    st.cache_data.clear()
+
+def generate_new_id(df):
+    if df.empty or 'id' not in df.columns:
+        return "1"
+    max_id = pd.to_numeric(df['id'], errors='coerce').max()
+    return str(int(max_id) + 1 if pd.notna(max_id) else 1)
+
+# --------------------------------
+# 2. 사용자 계정 관리
 # --------------------------------
 def get_user_credentials():
     users_df = get_data("users")
@@ -131,7 +411,6 @@ def add_user(username, password, name, role="user", department="환경사업부"
     return True, f"'{name} ({position})' 사용자가 성공적으로 등록되었습니다."
 
 def update_user_position(username, new_dept, new_pos):
-    """기존 사용자의 부서 및 직책 정보를 업데이트"""
     users_df = get_data("users")
     if not users_df.empty and 'username' in users_df.columns:
         for col in USER_COLS:
@@ -157,7 +436,7 @@ def delete_user(username):
     return False, "계정 정보를 찾을 수 없습니다."
 
 # --------------------------------
-# 3. 실시간 근태 및 출퇴근
+# 3. 실시간 근태 및 월간 분석 아카이브 관리
 # --------------------------------
 def record_attendance(name, department, att_type, note=""):
     df = get_data("live_attendance")
@@ -240,6 +519,53 @@ def delete_attendance(att_id):
         return True, "신청 내역이 정상적으로 취소되었습니다."
     return False, "기록을 찾을 수 없습니다."
 
+def save_monthly_att_archive(month_label, saved_by, summary_dict, raw_df):
+    """월간 심층 분석 결과를 구글 시트(monthly_att_archive)에 영구 저장"""
+    df = get_data("monthly_att_archive")
+    for col in ARCHIVE_COLS:
+        if col not in df.columns:
+            df[col] = ""
+    
+    # 동일한 month_label이 있으면 덮어쓰기 위해 기존 행 제거
+    if not df.empty:
+        df = df[df['month_label'].astype(str) != str(month_label)]
+        
+    new_id = generate_new_id(df)
+    now_str = get_kst_now().strftime("%Y-%m-%d %H:%M")
+    
+    # 용량 최적화 및 직렬화를 위해 주요 컬럼만 추출하여 JSON 변환
+    keep_cols = ['근무일자', '이름', '출근시간', '퇴근시간', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
+    valid_cols = [c for c in keep_cols if c in raw_df.columns]
+    compact_df = raw_df[valid_cols].copy()
+    for c in compact_df.columns:
+        compact_df[c] = compact_df[c].astype(str)
+        
+    summary_json_str = json.dumps(summary_dict, ensure_ascii=False)
+    raw_json_str = compact_df.to_json(orient="records", force_ascii=False)
+    
+    # 구글 시트 셀 50,000자 제한 방어
+    if len(raw_json_str) > 48000:
+        raw_json_str = compact_df.head(350).to_json(orient="records", force_ascii=False)
+        
+    new_row = pd.DataFrame([{
+        'id': str(new_id),
+        'month_label': str(month_label),
+        'saved_at': now_str,
+        'saved_by': str(saved_by),
+        'summary_json': summary_json_str,
+        'raw_json': raw_json_str
+    }])
+    save_data("monthly_att_archive", pd.concat([df, new_row], ignore_index=True))
+    return True, f"[{month_label}] 월간 근태 심층 분석 결과가 아카이브에 저장되었습니다."
+
+def delete_monthly_att_archive(archive_id):
+    df = get_data("monthly_att_archive")
+    if not df.empty and 'id' in df.columns:
+        df['id'] = df['id'].astype(str)
+        save_data("monthly_att_archive", df[df['id'] != str(archive_id)])
+        return True, "저장된 분석 기록이 삭제되었습니다."
+    return False, "삭제할 기록을 찾을 수 없습니다."
+
 # --------------------------------
 # 4. 업무보고 관리
 # --------------------------------
@@ -300,8 +626,9 @@ def time_to_minutes(t):
     if pd.isna(t): 
         return 0
     try:
-        if isinstance(t, str) and ':' in t:
-            parts = t.split(':')
+        t_str = str(t).strip()
+        if ':' in t_str:
+            parts = t_str.split(':')
             if len(parts) >= 2: 
                 return int(parts[0]) * 60 + int(parts[1])
         return 0
@@ -312,7 +639,6 @@ def time_to_minutes(t):
 # 5. 전자결재 & 지출정산 관리
 # --------------------------------
 def _determine_initial_status(mgr1, mgr2, final_req):
-    """기안 또는 수정 시 최초 진입할 결재 대기 단계 결정"""
     m1_clean = str(mgr1).strip()
     m2_clean = str(mgr2).strip()
     if m1_clean not in ["", "없음", "선택 안 함"]:
@@ -323,7 +649,7 @@ def _determine_initial_status(mgr1, mgr2, final_req):
         return "최종결재대기"
     return "승인완료(집행가능)"
 
-def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name="", related_doc_id=""):
+def insert_approval_doc(doc_type, title, drafter_name, department, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name="", attachment_url="", related_doc_id=""):
     df = get_data("approvals")
     for col in APPROVAL_COLS:
         if col not in df.columns:
@@ -345,16 +671,18 @@ def insert_approval_doc(doc_type, title, drafter_name, department, budget, targe
         'final_approval_req': str(final_req),
         'cc_users': str(", ".join(cc_users)) if cc_users else "없음",
         'attachment_name': str(attachment_name),
+        'attachment_url': str(attachment_url),
         'related_doc_id': str(related_doc_id) if related_doc_id else "",
         'manager1_name': '', 'manager1_comment': '',
         'manager2_name': '', 'manager2_comment': '',
         'final_approver': '', 'final_comment': '',
-        'spent_amount': '0', 'expense_details': '', 'expense_status': exp_status
+        'spent_amount': '0', 'expense_details': '', 'expense_status': exp_status,
+        'receipt_name': '', 'receipt_url': ''
     }])
     save_data("approvals", pd.concat([df, new_row], ignore_index=True))
     return True, new_id
 
-def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name=None, related_doc_id=None):
+def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr2, final_req, cc_users, content, attachment_name=None, attachment_url=None, related_doc_id=None):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
         for col in APPROVAL_COLS:
@@ -378,12 +706,14 @@ def update_approval_doc(doc_id, doc_type, title, budget, target_mgr1, target_mgr
             df.at[t_idx, 'content'] = str(content)
             if attachment_name is not None:
                 df.at[t_idx, 'attachment_name'] = str(attachment_name)
+            if attachment_url is not None:
+                df.at[t_idx, 'attachment_url'] = str(attachment_url)
             if related_doc_id is not None:
                 df.at[t_idx, 'related_doc_id'] = str(related_doc_id)
                 
             df.at[t_idx, 'status'] = _determine_initial_status(m1_val, m2_val, final_req)
             save_data("approvals", df)
-            return True, "품의서 내용 및 결재선이 수정되었습니다."
+            return True, "품의서 내용 및 첨부파일이 수정되었습니다."
     return False, "문서를 찾을 수 없습니다."
 
 def approve_step1(doc_id, manager_name, comment, is_reject=False):
@@ -468,9 +798,13 @@ def approve_final(doc_id, final_approver, comment, is_reject=False):
             return True, "최종 반려되었습니다." if is_reject else "최종 결재 완료! 집행 및 지출 정산이 가능합니다."
     return False, "문서를 찾을 수 없습니다."
 
-def submit_expense_report(doc_id, spent_amount, expense_details):
+def submit_expense_report(doc_id, spent_amount, expense_details, receipt_name=None, receipt_url=None):
     df = get_data("approvals")
     if not df.empty and 'id' in df.columns:
+        for col in APPROVAL_COLS:
+            if col not in df.columns:
+                df[col] = ""
+            df[col] = df[col].astype(object)
         df['id'] = df['id'].astype(str)
         idx = df[df['id'] == str(doc_id)].index
         if len(idx) > 0:
@@ -478,8 +812,12 @@ def submit_expense_report(doc_id, spent_amount, expense_details):
             df.at[t_idx, 'spent_amount'] = str(spent_amount)
             df.at[t_idx, 'expense_details'] = str(expense_details)
             df.at[t_idx, 'expense_status'] = '정산검토중'
+            if receipt_name:
+                df.at[t_idx, 'receipt_name'] = str(receipt_name)
+            if receipt_url:
+                df.at[t_idx, 'receipt_url'] = str(receipt_url)
             save_data("approvals", df)
-            return True, "지출 정산 내역이 상신되었습니다."
+            return True, "지출 정산 내역 및 증빙 파일이 상신되었습니다."
     return False, "문서를 찾을 수 없습니다."
 
 def finalize_expense(doc_id):
