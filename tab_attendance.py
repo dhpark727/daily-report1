@@ -51,7 +51,6 @@ def render_deep_analysis_dashboard(att_df, title_label, key_suffix="live"):
         총연장근무=('연장근무_분', lambda x: round(sum(x) / 60, 1))
     ).reset_index()
 
-    # 실출근일수 (정상출근 + 지각)
     emp_summary['실출근일수'] = emp_summary['정상출근일수'] + emp_summary['지각횟수']
     emp_summary['일평균근무시간'] = emp_summary.apply(
         lambda r: round(r['총근무시간'] / r['실출근일수'], 1) if r['실출근일수'] > 0 else 0.0, axis=1
@@ -81,7 +80,6 @@ def render_deep_analysis_dashboard(att_df, title_label, key_suffix="live"):
         "🔍 개인별 상세 출퇴근 타임라인"
     ])
 
-    # 탭 1: 직원별 순위 요약
     with e_tab1:
         st.subheader("직원별 근태 통계 및 종합 진단")
         display_summary = emp_summary[[
@@ -106,7 +104,6 @@ def render_deep_analysis_dashboard(att_df, title_label, key_suffix="live"):
             else:
                 st.success("✅ 해당 기간 지각자가 없습니다.")
 
-    # 탭 2: 심층 분석 리포트
     with e_tab2:
         st.subheader("🔬 심층 분석 1: 워라밸(Work-Life Balance) 및 과로 위험도 분석")
         d_col1, d_col2 = st.columns(2)
@@ -164,7 +161,6 @@ def render_deep_analysis_dashboard(att_df, title_label, key_suffix="live"):
                 else:
                     st.write("• 모든 요일에서 지각 발생 없음")
 
-    # 탭 3: 개인별 상세 타임라인
     with e_tab3:
         st.subheader("개인별 상세 출퇴근 기록 조회")
         selected_emp = st.selectbox(
@@ -308,15 +304,15 @@ def render_attendance_tab(user_name, user_dept):
         with sub_an1:
             st.subheader("📁 월간 근태 엑셀 심층 분석 및 보관함")
             
-            # 1. 저장된 아카이브 목록 불러오기 섹션
             archive_df = get_data("monthly_att_archive")
             archive_options = {"➕ 새 엑셀 파일 직접 업로드하여 분석하기": "NEW"}
             if not archive_df.empty and 'month_label' in archive_df.columns:
                 archive_df['num_id'] = pd.to_numeric(archive_df['id'], errors='coerce').fillna(0)
                 archive_df = archive_df.sort_values(by='num_id', ascending=False).reset_index(drop=True)
                 for _, r in archive_df.iterrows():
-                    lbl = f"📌 {r['month_label']} (저장일: {r.get('saved_at', '-')} | 작성자: {r.get('saved_by', '-')})"
-                    archive_options[lbl] = str(r['id'])
+                    if str(r.get('month_label', '')).strip():
+                        lbl = f"📌 {r['month_label']} (저장일: {r.get('saved_at', '-')} | 작성자: {r.get('saved_by', '-')})"
+                        archive_options[lbl] = str(r['id'])
 
             selected_mode_label = st.selectbox(
                 "📂 분석 모드 선택 (과거 저장된 월간 심층 분석 결과를 선택하거나 새 엑셀 파일을 업로드하세요)",
@@ -333,13 +329,16 @@ def render_attendance_tab(user_name, user_dept):
                 uploaded_file = st.file_uploader("월간 근태기록 엑셀 파일 업로드", type=["xlsx", "xls"], key="attendance_uploader")
                 
                 if uploaded_file is not None:
+                    att_df = None
                     try:
                         att_df = pd.read_excel(uploaded_file, sheet_name=0)
+                    except Exception as e:
+                        st.error(f"엑셀 파일 읽기 오류: {e}")
+
+                    if att_df is not None:
                         req_cols = ['근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간']
                         if all(col in att_df.columns for col in req_cols):
                             default_title = uploaded_file.name.replace(".xlsx", "").replace(".xls", "")
-                            
-                            # 심층 분석 렌더링
                             summary_dict = render_deep_analysis_dashboard(att_df, default_title, key_suffix="upload")
                             
                             st.markdown("---")
@@ -353,16 +352,17 @@ def render_attendance_tab(user_name, user_dept):
                                     st.write("")
                                     if st.form_submit_button("💾 분석 결과 영구 저장", type="primary", use_container_width=True):
                                         if save_label.strip():
-                                            ok, msg = save_monthly_att_archive(save_label.strip(), user_name, summary_dict, att_df)
-                                            if ok:
-                                                st.success(msg)
-                                                st.rerun()
+                                            try:
+                                                ok, msg = save_monthly_att_archive(save_label.strip(), user_name, summary_dict, att_df)
+                                                if ok:
+                                                    st.success(msg)
+                                                    st.rerun()
+                                            except Exception as save_err:
+                                                st.error(f"아카이브 저장 중 오류 발생 (구글 시트에 'monthly_att_archive' 탭이 있는지 확인해 주세요): {save_err}")
                                         else:
                                             st.error("저장할 제목을 입력해 주세요.")
                         else:
                             st.error("엑셀 파일 양식이 맞지 않습니다. ('근무일자', '이름', '출근판정', '퇴근판정', '총근무시간', '연장근무시간' 컬럼 필요)")
-                    except Exception as e:
-                        st.error(f"엑셀 파일 분석 오류: {e}")
                 else:
                     st.info("👆 위 파일 업로더에 월간 근태 엑셀 파일을 업로드하거나, 상단 드롭다운에서 저장된 과거 분석 기록을 선택해 주세요.")
 
